@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --terminal-bg: #0a0e14;
+  --terminal-panel: #111820;
+  --terminal-border: #1e2a3a;
+  --terminal-accent: #c9a227;
+}
+
+body {
+  background: var(--terminal-bg);
+  color: #d4dce6;
+}
+
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #2a3a4f;
+    border-radius: 3px;
+  }
+}
