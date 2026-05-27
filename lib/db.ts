@@ -42,11 +42,16 @@ export async function insertArticle(data: {
   title: string;
   url: string;
   published_at: string;
+  summary?: string | null;
+  is_syndicated?: boolean;
 }): Promise<NewsArticle | null> {
   const sql = getSql();
   return q1<NewsArticle>(sql`
-    INSERT INTO news_articles (source, title, url, published_at)
-    VALUES (${data.source}, ${data.title}, ${data.url}, ${data.published_at})
+    INSERT INTO news_articles (source, title, url, published_at, summary, is_syndicated)
+    VALUES (
+      ${data.source}, ${data.title}, ${data.url}, ${data.published_at},
+      ${data.summary ?? null}, ${data.is_syndicated ?? false}
+    )
     ON CONFLICT (url) DO NOTHING
     RETURNING *
   `);
@@ -89,9 +94,22 @@ export async function getRecentArticles(limit = 20): Promise<NewsArticle[]> {
 }
 
 export async function getRecentHighScoreArticles(
-  minutes = 30
+  minutes = 30,
+  primaryOnly = true
 ): Promise<NewsArticle[]> {
   const sql = getSql();
+  if (primaryOnly) {
+    return q<NewsArticle>(sql`
+      SELECT * FROM news_articles
+      WHERE processed = true
+        AND COALESCE(is_syndicated, false) = false
+        AND sentiment_score >= 0.65
+        AND confidence >= 0.7
+        AND sentiment_category IN ('bullish', 'regulatory_positive', 'listing_announcement')
+        AND published_at > NOW() - INTERVAL '1 minute' * ${minutes}
+      ORDER BY published_at DESC
+    `);
+  }
   return q<NewsArticle>(sql`
     SELECT * FROM news_articles
     WHERE processed = true
@@ -237,6 +255,7 @@ export async function saveSentimentSnapshot(data: {
   avg_score_1h: number;
   avg_score_6h: number;
   avg_score_24h: number;
+  weighted_avg_24h?: number;
   fear_greed_value: number;
   fear_greed_label: string;
   article_count_24h: number;
@@ -245,11 +264,12 @@ export async function saveSentimentSnapshot(data: {
   const sql = getSql();
   const row = await q1<SentimentSnapshot>(sql`
     INSERT INTO sentiment_snapshots (
-      avg_score_1h, avg_score_6h, avg_score_24h,
+      avg_score_1h, avg_score_6h, avg_score_24h, weighted_avg_24h,
       fear_greed_value, fear_greed_label,
       article_count_24h, dominant_category
     ) VALUES (
       ${data.avg_score_1h}, ${data.avg_score_6h}, ${data.avg_score_24h},
+      ${data.weighted_avg_24h ?? data.avg_score_24h},
       ${data.fear_greed_value}, ${data.fear_greed_label},
       ${data.article_count_24h}, ${data.dominant_category}
     )
@@ -319,16 +339,20 @@ export async function logSignal(data: {
   fear_greed_value?: number | null;
   acted_on?: boolean;
   skip_reason?: string | null;
+  funding_rate?: number | null;
+  velocity_multiplier?: number | null;
 }): Promise<StrategySignal> {
   const sql = getSql();
   const row = await q1<StrategySignal>(sql`
     INSERT INTO strategy_signals (
       strategy, pair, signal_type, sentiment_score,
-      fear_greed_value, acted_on, skip_reason
+      fear_greed_value, acted_on, skip_reason,
+      funding_rate, velocity_multiplier
     ) VALUES (
       ${data.strategy}, ${data.pair ?? null}, ${data.signal_type ?? null},
       ${data.sentiment_score ?? null}, ${data.fear_greed_value ?? null},
-      ${data.acted_on ?? false}, ${data.skip_reason ?? null}
+      ${data.acted_on ?? false}, ${data.skip_reason ?? null},
+      ${data.funding_rate ?? null}, ${data.velocity_multiplier ?? null}
     )
     RETURNING *
   `);
@@ -424,4 +448,200 @@ export async function hasOpenPositionForPair(pair: string): Promise<boolean> {
     SELECT id FROM positions WHERE pair = ${pair} AND closed_at IS NULL LIMIT 1
   `;
   return rows.length > 0;
+}
+
+export async function getClosedPnlSum(): Promise<number> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT COALESCE(SUM(pnl_usd), 0)::float AS total
+    FROM positions
+    WHERE closed_at IS NOT NULL AND pnl_usd IS NOT NULL
+  `;
+  return (rows[0] as { total: number })?.total ?? 0;
+}
+
+export async function getPortfolioSnapshot24hAgo(): Promise<PortfolioSnapshot | null> {
+  const sql = getSql();
+  return q1<PortfolioSnapshot>(sql`
+    SELECT * FROM portfolio_snapshots
+    WHERE captured_at > NOW() - INTERVAL '25 hours'
+    ORDER BY captured_at ASC
+    LIMIT 1
+  `);
+}
+
+export async function getArticleById(id: number): Promise<NewsArticle | null> {
+  const sql = getSql();
+  return q1<NewsArticle>(sql`
+    SELECT * FROM news_articles WHERE id = ${id}
+  `);
+}
+
+export async function getArticlesNearTime(
+  publishedAt: Date,
+  windowMinutes: number
+): Promise<NewsArticle[]> {
+  const sql = getSql();
+  const iso = publishedAt.toISOString();
+  return q<NewsArticle>(sql`
+    SELECT * FROM news_articles
+    WHERE published_at BETWEEN ${iso}::timestamptz - INTERVAL '1 minute' * ${windowMinutes}
+      AND ${iso}::timestamptz + INTERVAL '1 minute' * ${windowMinutes}
+    ORDER BY published_at DESC
+  `);
+}
+
+export async function getArticlesLast24h(): Promise<NewsArticle[]> {
+  const sql = getSql();
+  return q<NewsArticle>(sql`
+    SELECT * FROM news_articles
+    WHERE processed = true
+      AND sentiment_score IS NOT NULL
+      AND published_at > NOW() - INTERVAL '24 hours'
+    ORDER BY published_at DESC
+  `);
+}
+
+export async function getPairArticleCounts(
+  pair: string
+): Promise<{ recent1h: number; baseline7dHourly: number }> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE published_at > NOW() - INTERVAL '1 hour'
+          AND ${pair} = ANY(affected_pairs)
+      )::int AS recent1h,
+      COUNT(*) FILTER (
+        WHERE published_at > NOW() - INTERVAL '7 days'
+          AND published_at <= NOW() - INTERVAL '1 hour'
+          AND ${pair} = ANY(affected_pairs)
+      )::float / (7 * 24) AS baseline7d_hourly
+    FROM news_articles
+    WHERE affected_pairs IS NOT NULL
+  `;
+  const row = rows[0] as { recent1h: number; baseline7d_hourly: number | null };
+  return {
+    recent1h: row?.recent1h ?? 0,
+    baseline7dHourly: row?.baseline7d_hourly ?? 1,
+  };
+}
+
+export async function getArticleTriggerIds(): Promise<Record<number, number>> {
+  const sql = getSql();
+  const rows = await q<{ trigger_article_id: number; id: number }>(sql`
+    SELECT id, trigger_article_id FROM positions
+    WHERE trigger_article_id IS NOT NULL
+  `);
+  const map: Record<number, number> = {};
+  for (const r of rows) {
+    map[r.trigger_article_id] = r.id;
+  }
+  return map;
+}
+
+export interface CategoryStatsRow {
+  category: string;
+  totalTrades: number;
+  wins: number;
+  winRate: number;
+  avgPnlUsd: number;
+  avgReturnPct: number;
+  isReliable: boolean;
+}
+
+export async function getCategoryWinRates(): Promise<CategoryStatsRow[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT
+      COALESCE(na.sentiment_category, 'unknown') AS category,
+      COUNT(*)::int AS total_trades,
+      SUM(CASE WHEN p.pnl_usd > 0 THEN 1 ELSE 0 END)::int AS wins,
+      AVG(p.pnl_usd)::float AS avg_pnl_usd,
+      AVG(p.pnl_pct)::float AS avg_return_pct
+    FROM positions p
+    JOIN strategy_signals ss ON ss.strategy = p.strategy
+      AND ss.acted_on = true
+      AND ABS(EXTRACT(EPOCH FROM (p.opened_at - ss.triggered_at))) < 600
+    LEFT JOIN news_articles na ON na.id = p.trigger_article_id
+    WHERE p.closed_at IS NOT NULL AND p.pnl_usd IS NOT NULL
+    GROUP BY na.sentiment_category
+    ORDER BY total_trades DESC
+  `;
+
+  return (rows as Array<{
+    category: string;
+    total_trades: number;
+    wins: number;
+    avg_pnl_usd: number | null;
+    avg_return_pct: number | null;
+  }>).map((r) => ({
+    category: r.category,
+    totalTrades: r.total_trades,
+    wins: r.wins,
+    winRate: r.total_trades ? r.wins / r.total_trades : 0,
+    avgPnlUsd: r.avg_pnl_usd ?? 0,
+    avgReturnPct: r.avg_return_pct ?? 0,
+    isReliable: r.total_trades >= 10,
+  }));
+}
+
+export interface SignalQualityStats {
+  confirmationRate: number;
+  fundingSkipRate: number;
+  avgVelocityThisWeek: number;
+  maxVelocityThisWeek: number;
+}
+
+export async function getSignalQualityStats(): Promise<SignalQualityStats> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE skip_reason IS NULL OR skip_reason NOT LIKE 'single_source%'
+      )::float AS acted_or_other,
+      COUNT(*) FILTER (
+        WHERE skip_reason LIKE 'single_source%'
+      )::float AS single_source,
+      COUNT(*) FILTER (
+        WHERE skip_reason LIKE 'funding_crowded%'
+      )::float AS funding_skipped,
+      COUNT(*)::float AS total,
+      AVG(velocity_multiplier) FILTER (
+        WHERE triggered_at > NOW() - INTERVAL '7 days'
+          AND velocity_multiplier IS NOT NULL
+      )::float AS avg_velocity,
+      MAX(velocity_multiplier) FILTER (
+        WHERE triggered_at > NOW() - INTERVAL '7 days'
+      )::float AS max_velocity
+    FROM strategy_signals
+    WHERE strategy = 'momentum'
+      AND triggered_at > NOW() - INTERVAL '7 days'
+  `;
+  const r = rows[0] as {
+    acted_or_other: number;
+    single_source: number;
+    funding_skipped: number;
+    total: number;
+    avg_velocity: number | null;
+    max_velocity: number | null;
+  };
+  const total = r?.total ?? 0;
+  const confirmed = total - (r?.single_source ?? 0);
+  return {
+    confirmationRate: total ? confirmed / total : 0,
+    fundingSkipRate: total ? (r?.funding_skipped ?? 0) / total : 0,
+    avgVelocityThisWeek: r?.avg_velocity ?? 0,
+    maxVelocityThisWeek: r?.max_velocity ?? 0,
+  };
+}
+export async function getArticlesPrior24h(): Promise<NewsArticle[]> {
+  const sql = getSql();
+  return q<NewsArticle>(sql`
+    SELECT * FROM news_articles
+    WHERE processed = true
+      AND sentiment_score IS NOT NULL
+      AND published_at BETWEEN NOW() - INTERVAL '48 hours' AND NOW() - INTERVAL '24 hours'
+    ORDER BY published_at DESC
+  `);
 }

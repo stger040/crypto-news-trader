@@ -10,18 +10,23 @@ import { TradeHistory } from "./TradeHistory";
 import { Analytics } from "./Analytics";
 import { BotHealth } from "./BotHealth";
 import { ForceTestRun } from "./ForceTestRun";
+import { SignalQuality } from "./SignalQuality";
 import type {
   AnalyticsSummary,
   BotHealthStatus,
+  CategoryStats,
   NewsArticle,
+  NewsArticleMeta,
   Position,
   PositionWithPnL,
   SentimentSnapshot,
+  SignalQualityStats,
   StrategyPanelStatus,
 } from "@/lib/types";
 
 interface DashboardData {
   news: NewsArticle[];
+  articleMeta: Record<number, NewsArticleMeta>;
   sentiment: SentimentSnapshot | null;
   strategies: StrategyPanelStatus[];
   positions: PositionWithPnL[];
@@ -32,6 +37,8 @@ interface DashboardData {
     cash_usd: number;
     positions_value_usd: number;
   };
+  signalQuality: SignalQualityStats;
+  categoryStats: CategoryStats[];
   health: BotHealthStatus;
   liveTrading: boolean;
 }
@@ -115,7 +122,10 @@ export function Dashboard() {
 
       <main className="mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-12">
         <div className="lg:col-span-5">
-          <NewsFeed articles={data?.news ?? []} />
+          <NewsFeed
+            articles={data?.news ?? []}
+            meta={data?.articleMeta ?? {}}
+          />
         </div>
         <div className="space-y-4 lg:col-span-4">
           <SentimentGauge snapshot={data?.sentiment ?? null} />
@@ -135,6 +145,19 @@ export function Dashboard() {
                 onTrack: false,
               }
             }
+          />
+        </div>
+        <div className="lg:col-span-12">
+          <SignalQuality
+            stats={
+              data?.signalQuality ?? {
+                confirmationRate: 0,
+                fundingSkipRate: 0,
+                avgVelocityThisWeek: 0,
+                maxVelocityThisWeek: 0,
+              }
+            }
+            categories={data?.categoryStats ?? []}
           />
         </div>
         <div className="lg:col-span-12">

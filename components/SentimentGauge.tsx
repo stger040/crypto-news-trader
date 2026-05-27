@@ -11,6 +11,9 @@ export function SentimentGauge({
   const label = snapshot?.fear_greed_label ?? "Neutral";
   const avg1h = Number(snapshot?.avg_score_1h ?? 0);
   const avg24h = Number(snapshot?.avg_score_24h ?? 0);
+  const weighted24h = Number(
+    snapshot?.weighted_avg_24h ?? snapshot?.avg_score_24h ?? 0
+  );
 
   const fngColor =
     fng <= 25 ? "text-red-400" : fng >= 75 ? "text-emerald-400" : "text-amber-accent";
@@ -26,10 +29,18 @@ export function SentimentGauge({
           <p className="mt-1 font-mono text-sm">{avg1h.toFixed(3)}</p>
         </div>
         <div>
-          <p className="text-xs uppercase text-slate-500">Avg 24h</p>
+          <p className="text-xs uppercase text-slate-500">Avg 24h (raw)</p>
           <Meter value={avg24h} />
           <p className="mt-1 font-mono text-sm">{avg24h.toFixed(3)}</p>
         </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs uppercase text-slate-500">Weighted avg 24h (λ=0.5/hr)</p>
+        <Meter value={weighted24h} />
+        <p className="mt-1 font-mono text-sm text-amber-accent/90">
+          {weighted24h.toFixed(3)}
+        </p>
       </div>
 
       <div className="mt-6 border-t border-navy-700 pt-4">

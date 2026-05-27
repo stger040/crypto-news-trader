@@ -1,7 +1,10 @@
 import Parser from "rss-parser";
+import { isDuplicate } from "./deduplication";
+import { computeDecayWeightedAvg } from "./strategies/sentimentMomentum";
 import {
   articleExistsByUrl,
   insertArticle,
+  getArticlesLast24h,
   getLastFeedSync,
   updateFeedSync,
   getLatestSentimentSnapshot,
@@ -71,11 +74,19 @@ async function fetchSingleFeed(
         continue;
       }
 
+      const summary =
+        (item as { contentSnippet?: string; summary?: string }).contentSnippet ??
+        (item as { summary?: string }).summary ??
+        null;
+      const syndicated = await isDuplicate(title, publishedAt);
+
       const row = await insertArticle({
         source,
         title,
         url,
         published_at: publishedAt.toISOString(),
+        summary,
+        is_syndicated: syndicated,
       });
 
       if (row) inserted++;
@@ -226,11 +237,14 @@ export async function fetchFearAndGreed(): Promise<FearGreedResult> {
   ]);
 
   const dominant = await getDominantCategory24h();
+  const articles24h = await getArticlesLast24h();
+  const weightedAvg24h = computeDecayWeightedAvg(articles24h);
 
   await saveSentimentSnapshot({
     avg_score_1h: h1.avg,
     avg_score_6h: h6.avg,
     avg_score_24h: h24.avg,
+    weighted_avg_24h: weightedAvg24h,
     fear_greed_value: today,
     fear_greed_label: label,
     article_count_24h: h24.count,

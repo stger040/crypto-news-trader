@@ -98,11 +98,6 @@ export async function runFearGreedStrategy(
   if (cash < sizeUsd) {
     return { action: "skip", detail: "Insufficient cash" };
   }
-
-  if (fgPositions.some((p) => p.pair === "BTC")) {
-    return { action: "skip", detail: "BTC F&G position already open" };
-  }
-
   const entryPrice = await getKrakenPrice("BTC");
   await placeMarketOrder("BTC", "buy", sizeUsd);
 

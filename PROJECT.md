@@ -155,7 +155,7 @@ All SQL lives in `lib/db.ts` — no inline SQL elsewhere.
 | `LIVE_TRADING` | `false` = paper (default) |
 | `NEXT_PUBLIC_LIVE_TRADING` | Dashboard badge |
 | `CRON_SECRET` | Secures `/api/cron` and `/api/debug-state` |
-| `NEXT_PUBLIC_CRON_SECRET` | Force Test Run button auth |
+| `NEXT_PUBLIC_CRON_SECRET` | Optional legacy; Force Test Run uses `/api/request-test-run` (no client secret) |
 | `NEXT_PUBLIC_SITE_URL` | Production URL, e.g. `https://crypto-news-trader.vercel.app` |
 
 See `.env.example` for full list and comments.
@@ -167,7 +167,8 @@ See `.env.example` for full list and comments.
 | Route | Auth | Description |
 |-------|------|-------------|
 | `GET /api/cron` | `CRON_SECRET` (optional if unset) | Main 5-min bot loop |
-| `GET /api/test-run` | `CRON_SECRET` or `NEXT_PUBLIC_CRON_SECRET` | Force full cycle; bypasses time filters |
+| `GET /api/test-run` | `CRON_SECRET` only | Programmatic force cycle (server-to-server) |
+| `POST /api/request-test-run` | None | Dashboard Force Test Run (server-side only) |
 | `GET /api/debug-state` | `CRON_SECRET` | Last articles, positions, signals, portfolio |
 | `GET /api/dashboard` | None | Dashboard JSON (polls every 60s) |
 
@@ -186,7 +187,7 @@ Dark navy/slate UI with amber accents (`app/page.tsx` + `components/`).
 | Trade History | Last 30 closed positions |
 | Analytics | Win rate, Sharpe, monthly P&L, 9% target badge |
 | Bot Health | Last `cron_runs` entry (< 6m green, < 15m yellow, else red) |
-| Force Test Run | Calls `/api/test-run` |
+| Force Test Run | Calls `/api/request-test-run` (no secret in browser) |
 
 ---
 
@@ -200,6 +201,9 @@ Dark navy/slate UI with amber accents (`app/page.tsx` + `components/`).
 | Sentiment momentum | 4% BTC + 4% ETH |
 | F&G size | 3% per entry, max 5 positions (15% cap) |
 | Momentum stop / TP / time | −2.5% / +4% / 4 hours |
+| Kraken taker fee | 0.40% per side (0.80% round-trip, base tier) |
+| Break-even win rate (Momentum) | ~50.8% (after round-trip fees) |
+| Funding rate threshold | Skip long if funding > 0.03%/8h |
 | Spot shorting | Never — bearish = cash + log signal |
 
 ---
@@ -238,6 +242,10 @@ lib/db.ts                      # All Neon queries
 lib/newsFetcher.ts             # RSS + Reddit + F&G
 lib/sentiment.ts               # OpenAI scoring
 lib/strategies/                # momentum, sentimentMomentum, fearGreed
+lib/fundingRate.ts             # Binance perp funding filter
+lib/confirmation.ts          # Multi-source corroboration
+lib/velocity.ts                # News velocity multiplier
+lib/deduplication.ts           # Semantic syndication detection
 lib/cronRunner.ts              # Orchestrates each cycle
 components/Dashboard.tsx       # Main UI
 db/migrations/001_initial.sql  # Schema reference
@@ -249,8 +257,10 @@ vercel.json                    # Cron schedule
 ## What Has Not Been Built Yet
 
 - Live Kraken order signing and execution
-- Backtest / walk-forward framework
-- Slippage and fee modeling in analytics
+- Coinbase listing detector (Stage 2)
+- ETF flow regime overlay (Stage 2)
+- Polymarket overlay (Stage 3)
+- Walk-forward backtesting harness (future)
 - Multi-user dashboard authentication
 - Email / Slack alerting (ntfy only today)
 - Automated monthly gate vs 9% target (manual review for now)
@@ -267,6 +277,22 @@ vercel.json                    # Cron schedule
 - Implemented RSS/Reddit news fetcher, GPT-4o-mini sentiment, three strategies, cron loop, dashboard.
 - Confirmed all RSS sources are free / no API keys required.
 - Opened draft PR on feature branch `cursor/crypto-news-trader-neon-698e`.
+
+
+### 2026-05-27 — Bug fixes + signal improvements (Parts A–C)
+
+- Fixed portfolio accounting drift (anchored to `INITIAL_CASH_USD`, 24h daily P&L from snapshot)
+- Fixed F&G ladder (removed single-BTC-position block; MAX_POSITIONS + 15% cap remain)
+- Fixed test-run auth (removed `NEXT_PUBLIC_CRON_SECRET` from auth; new `/api/request-test-run`)
+- Updated fee model to Kraken taker 0.40%/side (0.80% round-trip)
+- Added Binance funding rate filter on momentum longs (`lib/fundingRate.ts`)
+- Added multi-source corroboration gate (`lib/confirmation.ts`)
+- Added exponential sentiment decay λ=0.5/hr for daily strategy
+- Added news velocity multiplier (`lib/velocity.ts`)
+- Added title+summary GPT scoring + `summary` column
+- Added semantic deduplication + `is_syndicated` flag (`lib/deduplication.ts`)
+- Added category win-rate tracking + Signal Quality dashboard panel
+- DB migrations 002–005 applied via Neon MCP
 
 ### 2026-05-27 — Production deploy + validation
 

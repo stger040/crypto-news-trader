@@ -1,5 +1,9 @@
-import { getClosedTrades, getTotalFees } from "./db";
-import type { AnalyticsSummary } from "./types";
+import {
+  getClosedTrades,
+  getTotalFees,
+  getCategoryWinRates,
+} from "./db";
+import type { AnalyticsSummary, CategoryStats } from "./types";
 
 const MONTHLY_TARGET_PCT = 9;
 
@@ -53,4 +57,8 @@ export async function buildAnalytics(): Promise<AnalyticsSummary> {
     monthlyTargetPct: MONTHLY_TARGET_PCT,
     onTrack,
   };
+}
+
+export async function getCategoryWinRatesAnalytics(): Promise<CategoryStats[]> {
+  return getCategoryWinRates();
 }

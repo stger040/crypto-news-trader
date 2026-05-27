@@ -31,6 +31,8 @@ export interface NewsArticle {
   confidence: number | null;
   affected_pairs: string[] | null;
   processed: boolean;
+  summary?: string | null;
+  is_syndicated?: boolean | null;
 }
 
 export interface SentimentSnapshot {
@@ -43,6 +45,7 @@ export interface SentimentSnapshot {
   fear_greed_label: string | null;
   article_count_24h: number | null;
   dominant_category: string | null;
+  weighted_avg_24h?: number | null;
 }
 
 export interface Position {
@@ -84,6 +87,8 @@ export interface StrategySignal {
   fear_greed_value: number | null;
   acted_on: boolean;
   skip_reason: string | null;
+  funding_rate?: number | null;
+  velocity_multiplier?: number | null;
 }
 
 export interface PositionWithPnL {
@@ -135,4 +140,26 @@ export interface CronResult {
   skipReasons: string[];
   errors: string[];
   durationMs: number;
+}
+export interface CategoryStats {
+  category: string;
+  totalTrades: number;
+  wins: number;
+  winRate: number;
+  avgPnlUsd: number;
+  avgReturnPct: number;
+  isReliable: boolean;
+}
+
+export interface SignalQualityStats {
+  confirmationRate: number;
+  fundingSkipRate: number;
+  avgVelocityThisWeek: number;
+  maxVelocityThisWeek: number;
+}
+
+export interface NewsArticleMeta {
+  corroborated: boolean;
+  velocityHigh: boolean;
+  triggeredPositionId: number | null;
 }

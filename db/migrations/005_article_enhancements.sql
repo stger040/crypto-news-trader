@@ -1,0 +1,4 @@
+ALTER TABLE news_articles
+  ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE news_articles
+  ADD COLUMN IF NOT EXISTS is_syndicated BOOLEAN DEFAULT FALSE;

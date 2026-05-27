@@ -11,12 +11,9 @@ export function ForceTestRun() {
     setLoading(true);
     setMsg(null);
     try {
-      const secret = process.env.NEXT_PUBLIC_CRON_SECRET ?? "";
-      const res = await fetch("/api/test-run", {
-        headers: { "x-test-secret": secret },
-      });
+      const res = await fetch("/api/request-test-run", { method: "POST" });
       const data = await res.json();
-      if (!res.ok) setMsg(`Error: ${data.error}`);
+      if (!res.ok) setMsg(`Error: ${data.error ?? res.statusText}`);
       else
         setMsg(
           `OK ${data.durationMs}ms — fetched ${data.articlesFetched}, scored ${data.articlesScored}, trades ${data.tradesExecuted}`

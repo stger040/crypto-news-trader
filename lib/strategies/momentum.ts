@@ -1,6 +1,5 @@
 import {
   getOpenPositions,
-  getOpenPositionsByStrategy,
   openPosition,
   logSignal,
   hasOpenPositionForPair,
@@ -11,15 +10,19 @@ import {
   getKrakenPrice,
   get24hPriceChangePct,
   placeMarketOrder,
-  estimateFee,
 } from "../kraken";
 import { getPortfolioCash, getPortfolioTotal } from "../portfolio";
 import { notify } from "../notify";
-import type { NewsArticle, CronOptions } from "../types";
+import { fetchFundingRates } from "../fundingRate";
+import { isCorroborated } from "../confirmation";
+import { getVelocityMultiplier, boostConfidence } from "../velocity";
+import type { CronOptions } from "../types";
 
 const MAX_MOMENTUM_POSITIONS = 2;
 const POSITION_SIZE_PCT = 0.03;
 const MIN_TEST_SIZE_USD = 50;
+const MIN_CONFIDENCE = 0.7;
+const FUNDING_THRESHOLD = 0.0003;
 
 export interface MomentumResult {
   opened: number;
@@ -31,9 +34,7 @@ export async function runMomentumStrategy(
 ): Promise<MomentumResult> {
   const result: MomentumResult = { opened: 0, skipped: [] };
   const openAll = await getOpenPositions();
-  const momentumOpen = openAll.filter(
-    (p) => p.strategy === "momentum"
-  );
+  const momentumOpen = openAll.filter((p) => p.strategy === "momentum");
 
   const bearish = await getBearishRecentArticles();
   for (const article of bearish) {
@@ -53,8 +54,8 @@ export async function runMomentumStrategy(
   }
 
   const articles = options.testRun
-    ? await getRecentHighScoreArticles(9999)
-    : await getRecentHighScoreArticles(30);
+    ? await getRecentHighScoreArticles(9999, true)
+    : await getRecentHighScoreArticles(30, true);
 
   const portfolioTotal = await getPortfolioTotal();
   let slotsLeft = MAX_MOMENTUM_POSITIONS - momentumOpen.length;
@@ -71,6 +72,17 @@ export async function runMomentumStrategy(
         continue;
       }
 
+      const velocityMultiplier = await getVelocityMultiplier(pair);
+      const baseConfidence = Number(article.confidence ?? 0);
+      const effectiveConfidence = options.testRun
+        ? baseConfidence
+        : boostConfidence(baseConfidence, velocityMultiplier);
+
+      if (effectiveConfidence < MIN_CONFIDENCE && !options.testRun) {
+        result.skipped.push(`${pair}: effective confidence ${effectiveConfidence.toFixed(2)}`);
+        continue;
+      }
+
       const changePct = options.testRun
         ? 0
         : await get24hPriceChangePct(pair);
@@ -81,8 +93,46 @@ export async function runMomentumStrategy(
           pair,
           signal_type: "bullish",
           sentiment_score: article.sentiment_score,
+          velocity_multiplier: velocityMultiplier,
           acted_on: false,
           skip_reason: "price_already_moved_8pct",
+        });
+        continue;
+      }
+
+      if (!options.testRun) {
+        const corroborated = await isCorroborated(article.id, 30);
+        if (!corroborated) {
+          result.skipped.push(`${pair}: single-source signal — awaiting corroboration`);
+          await logSignal({
+            strategy: "momentum",
+            pair,
+            signal_type: "bullish",
+            sentiment_score: article.sentiment_score,
+            velocity_multiplier: velocityMultiplier,
+            acted_on: false,
+            skip_reason: "single_source_unconfirmed",
+          });
+          continue;
+        }
+      }
+
+      const fundingRates = await fetchFundingRates([pair]);
+      const funding = fundingRates[pair] ?? 0;
+
+      if (funding > FUNDING_THRESHOLD && !options.testRun) {
+        result.skipped.push(
+          `${pair}: funding too high (${funding.toFixed(4)}) — crowded longs`
+        );
+        await logSignal({
+          strategy: "momentum",
+          pair,
+          signal_type: "bullish",
+          sentiment_score: article.sentiment_score,
+          funding_rate: funding,
+          velocity_multiplier: velocityMultiplier,
+          acted_on: false,
+          skip_reason: `funding_crowded_${funding.toFixed(4)}`,
         });
         continue;
       }
@@ -116,6 +166,8 @@ export async function runMomentumStrategy(
         pair,
         signal_type: "bullish",
         sentiment_score: article.sentiment_score,
+        funding_rate: funding,
+        velocity_multiplier: velocityMultiplier,
         acted_on: true,
       });
 
@@ -130,18 +182,4 @@ export async function runMomentumStrategy(
   }
 
   return result;
-}
-
-export function articleQualifiesForMomentum(
-  article: NewsArticle,
-  testRun = false
-): boolean {
-  if (testRun) return true;
-  return (
-    (article.sentiment_score ?? 0) >= 0.65 &&
-    (article.confidence ?? 0) >= 0.7 &&
-    ["bullish", "regulatory_positive", "listing_announcement"].includes(
-      article.sentiment_category ?? ""
-    )
-  );
 }

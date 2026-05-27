@@ -19,7 +19,9 @@ export const KRAKEN_PAIRS: TradingPair[] = [
 ];
 
 export const INITIAL_CASH_USD = 10000;
-export const KRAKEN_FEE_RATE = 0.0026;
+
+// Kraken base-tier taker fee (market orders). Improves with 30-day volume.
+export const KRAKEN_TAKER_FEE_RATE = 0.004;
 
 export function isLiveTrading(): boolean {
   return process.env.LIVE_TRADING === "true";
@@ -79,11 +81,11 @@ export async function placeMarketOrder(
   if (!isLiveTrading()) {
     return { success: true, simulated: true };
   }
-  // Live Kraken signing not implemented — paper default
   console.warn("Live Kraken order stub");
   return { success: true, simulated: false };
 }
 
+/** Single-side taker fee estimate (entry or exit). Round-trip ≈ 0.80% at base tier. */
 export function estimateFee(sizeUsd: number): number {
-  return sizeUsd * KRAKEN_FEE_RATE * 2;
+  return sizeUsd * KRAKEN_TAKER_FEE_RATE;
 }

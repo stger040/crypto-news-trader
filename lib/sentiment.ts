@@ -37,7 +37,14 @@ function parseResult(raw: string): SentimentResult {
   };
 }
 
-export async function scoreSentiment(title: string): Promise<SentimentResult> {
+function buildUserPrompt(title: string, summary?: string): string {
+  return `Headline: ${title}\nSummary: ${summary ?? ""}`;
+}
+
+export async function scoreSentiment(
+  title: string,
+  summary?: string
+): Promise<SentimentResult> {
   const openai = getOpenAI();
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -45,7 +52,7 @@ export async function scoreSentiment(title: string): Promise<SentimentResult> {
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: title },
+      { role: "user", content: buildUserPrompt(title, summary) },
     ],
   });
 
@@ -72,7 +79,13 @@ export async function scoreUnprocessedArticles(): Promise<number> {
             response_format: { type: "json_object" },
             messages: [
               { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: article.title },
+              {
+                role: "user",
+                content: buildUserPrompt(
+                  article.title,
+                  article.summary ?? undefined
+                ),
+              },
             ],
           });
 

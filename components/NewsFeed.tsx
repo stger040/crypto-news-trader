@@ -1,6 +1,6 @@
 "use client";
 
-import type { NewsArticle } from "@/lib/types";
+import type { NewsArticle, NewsArticleMeta } from "@/lib/types";
 
 const SOURCE_COLORS: Record<string, string> = {
   cointelegraph: "bg-orange-500/20 text-orange-300",
@@ -27,7 +27,13 @@ function scoreColor(score: number | null) {
   return "bg-slate-600/40 text-slate-300";
 }
 
-export function NewsFeed({ articles }: { articles: NewsArticle[] }) {
+export function NewsFeed({
+  articles,
+  meta,
+}: {
+  articles: NewsArticle[];
+  meta: Record<number, NewsArticleMeta>;
+}) {
   return (
     <div className="rounded-xl border border-navy-700 bg-navy-900/80 overflow-hidden">
       <div className="border-b border-navy-700 px-4 py-3">
@@ -38,45 +44,56 @@ export function NewsFeed({ articles }: { articles: NewsArticle[] }) {
         {articles.length === 0 ? (
           <p className="p-4 text-sm text-slate-500">No articles yet — run cron</p>
         ) : (
-          articles.map((a) => (
-            <article key={a.id} className="px-4 py-3 hover:bg-navy-800/40">
-              <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                <span
-                  className={`rounded px-2 py-0.5 text-[10px] uppercase font-medium ${SOURCE_COLORS[a.source] ?? "bg-slate-700 text-slate-300"}`}
-                >
-                  {a.source}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-mono ${scoreColor(a.sentiment_score != null ? Number(a.sentiment_score) : null)}`}
-                >
-                  {a.sentiment_score != null
-                    ? Number(a.sentiment_score).toFixed(2)
-                    : "—"}
-                </span>
-                <span className="text-[10px] text-slate-500">{timeAgo(a.published_at)}</span>
-              </div>
-              <a
-                href={a.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm leading-snug text-slate-200 hover:text-amber-accent"
-              >
-                {a.title}
-              </a>
-              {a.affected_pairs && a.affected_pairs.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {a.affected_pairs.map((p) => (
-                    <span
-                      key={p}
-                      className="rounded bg-navy-800 px-1.5 py-0.5 text-[10px] text-slate-400"
-                    >
-                      {p}
-                    </span>
-                  ))}
+          articles.map((a) => {
+            const m = meta[a.id];
+            return (
+              <article key={a.id} className="px-4 py-3 hover:bg-navy-800/40">
+                <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded px-2 py-0.5 text-[10px] uppercase font-medium ${SOURCE_COLORS[a.source] ?? "bg-slate-700 text-slate-300"}`}
+                  >
+                    {a.source}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-mono ${scoreColor(a.sentiment_score != null ? Number(a.sentiment_score) : null)}`}
+                  >
+                    {a.sentiment_score != null
+                      ? Number(a.sentiment_score).toFixed(2)
+                      : "—"}
+                  </span>
+                  <span className="text-[10px] text-slate-500">{timeAgo(a.published_at)}</span>
+                  <span className="flex gap-1 text-sm" title="Signal metadata">
+                    {a.is_syndicated && <span title="Syndicated">🔗</span>}
+                    {m?.corroborated && <span title="Corroborated">✅</span>}
+                    {m?.velocityHigh && <span title="High velocity">⚡</span>}
+                    {m?.triggeredPositionId != null && (
+                      <span title={`Trade #${m.triggeredPositionId}`}>💰</span>
+                    )}
+                  </span>
                 </div>
-              )}
-            </article>
-          ))
+                <a
+                  href={a.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm leading-snug text-slate-200 hover:text-amber-accent"
+                >
+                  {a.title}
+                </a>
+                {a.affected_pairs && a.affected_pairs.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {a.affected_pairs.map((p) => (
+                      <span
+                        key={p}
+                        className="rounded bg-navy-800 px-1.5 py-0.5 text-[10px] text-slate-400"
+                      >
+                        {p}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </article>
+            );
+          })
         )}
       </div>
     </div>

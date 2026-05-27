@@ -13,14 +13,7 @@ export function verifyCronSecret(request: NextRequest): boolean {
   return false;
 }
 
+/** Server-to-server only — never accept public env vars. */
 export function verifyTestRun(request: NextRequest): boolean {
-  if (verifyCronSecret(request)) return true;
-
-  const publicSecret = process.env.NEXT_PUBLIC_CRON_SECRET;
-  if (!publicSecret) return false;
-
-  return (
-    request.headers.get("x-test-secret") === publicSecret ||
-    request.nextUrl.searchParams.get("secret") === publicSecret
-  );
+  return verifyCronSecret(request);
 }

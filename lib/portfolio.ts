@@ -1,22 +1,14 @@
 import {
   getOpenPositions,
-  getLatestPortfolioSnapshot,
-  getClosedTrades,
+  getPortfolioSnapshot24hAgo,
+  getClosedPnlSum,
 } from "./db";
 import { getKrakenPrice, INITIAL_CASH_USD } from "./kraken";
 
-export async function getPortfolioCash(): Promise<number> {
-  const open = await getOpenPositions();
-  const latest = await getLatestPortfolioSnapshot();
-  const baseCash = latest?.cash_usd ?? INITIAL_CASH_USD;
-  const deployed = open.reduce((s, p) => s + Number(p.size_usd), 0);
-  return Math.max(0, Number(baseCash) - deployed);
-}
-
-export async function getPortfolioTotal(): Promise<number> {
-  const open = await getOpenPositions();
+async function computePositionsValue(
+  open: Awaited<ReturnType<typeof getOpenPositions>>
+): Promise<number> {
   let positionsValue = 0;
-
   for (const pos of open) {
     try {
       const price = await getKrakenPrice(pos.pair);
@@ -26,10 +18,25 @@ export async function getPortfolioTotal(): Promise<number> {
       positionsValue += Number(pos.size_usd);
     }
   }
+  return positionsValue;
+}
 
-  const latest = await getLatestPortfolioSnapshot();
-  const cash = latest?.cash_usd ?? INITIAL_CASH_USD;
-  return Number(cash) + positionsValue;
+async function computeAnchoredCash(): Promise<number> {
+  const open = await getOpenPositions();
+  const deployed = open.reduce((s, p) => s + Number(p.size_usd), 0);
+  const closedPnl = await getClosedPnlSum();
+  return INITIAL_CASH_USD - deployed + closedPnl;
+}
+
+export async function getPortfolioCash(): Promise<number> {
+  return Math.max(0, await computeAnchoredCash());
+}
+
+export async function getPortfolioTotal(): Promise<number> {
+  const open = await getOpenPositions();
+  const positionsValue = await computePositionsValue(open);
+  const cashUsd = await computeAnchoredCash();
+  return Math.max(0, cashUsd) + positionsValue;
 }
 
 export async function computePortfolioSnapshot(): Promise<{
@@ -40,36 +47,14 @@ export async function computePortfolioSnapshot(): Promise<{
   total_pnl_usd: number;
 }> {
   const open = await getOpenPositions();
-  let positionsValue = 0;
-
-  for (const pos of open) {
-    try {
-      const price = await getKrakenPrice(pos.pair);
-      const sizeAsset = Number(pos.size_usd) / Number(pos.entry_price);
-      positionsValue += sizeAsset * price;
-    } catch {
-      positionsValue += Number(pos.size_usd);
-    }
-  }
-
-  const latest = await getLatestPortfolioSnapshot();
-  const initialCash = INITIAL_CASH_USD;
-  const cashUsd = Math.max(
-    0,
-    (latest?.cash_usd ?? initialCash) -
-      open.reduce((s, p) => s + Number(p.size_usd), 0) +
-      (await getClosedTrades(500)).reduce(
-        (s, t) => s + Number(t.pnl_usd ?? 0),
-        0
-      )
-  );
-
+  const positionsValue = await computePositionsValue(open);
+  const cashUsd = Math.max(0, await computeAnchoredCash());
   const totalValue = cashUsd + positionsValue;
-  const totalPnl = totalValue - initialCash;
+  const totalPnl = totalValue - INITIAL_CASH_USD;
 
-  const history = latest;
-  const dailyPnl = history
-    ? totalValue - Number(history.total_value_usd ?? initialCash)
+  const snapshot24h = await getPortfolioSnapshot24hAgo();
+  const dailyPnl = snapshot24h
+    ? totalValue - Number(snapshot24h.total_value_usd ?? INITIAL_CASH_USD)
     : 0;
 
   return {

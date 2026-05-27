@@ -6,11 +6,20 @@ import {
   getLastCronRun,
   countPositionsOpenedToday,
   getLastSignalForStrategy,
+  getOpenPositionsByStrategy,
+  getArticleTriggerIds,
+  getSignalQualityStats,
 } from "@/lib/db";
 import { getPositionsWithPnL } from "@/lib/positionsView";
-import { buildAnalytics } from "@/lib/analytics";
+import { buildAnalytics, getCategoryWinRatesAnalytics } from "@/lib/analytics";
 import { computePortfolioSnapshot } from "@/lib/portfolio";
-import type { BotHealthStatus, StrategyPanelStatus } from "@/lib/types";
+import { isCorroborated } from "@/lib/confirmation";
+import { getVelocityMultiplier } from "@/lib/velocity";
+import type {
+  BotHealthStatus,
+  StrategyPanelStatus,
+  NewsArticleMeta,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +33,9 @@ export async function GET() {
       portfolio,
       sentiment,
       lastCron,
+      signalQuality,
+      categoryStats,
+      triggerMap,
     ] = await Promise.all([
       getRecentArticles(20),
       getPositionsWithPnL(),
@@ -32,6 +44,9 @@ export async function GET() {
       computePortfolioSnapshot(),
       getLatestSentimentSnapshot(),
       getLastCronRun(),
+      getSignalQualityStats(),
+      getCategoryWinRatesAnalytics(),
+      getArticleTriggerIds(),
     ]);
 
     const strategies: StrategyPanelStatus[] = await Promise.all([
@@ -40,16 +55,48 @@ export async function GET() {
       buildStrategyStatus("fearGreed", "Fear & Greed Contrarian"),
     ]);
 
+    const articleMeta: Record<number, NewsArticleMeta> = {};
+    await Promise.all(
+      news.map(async (article) => {
+        const pair = article.affected_pairs?.[0];
+        let velocityHigh = false;
+        if (pair && article.processed) {
+          try {
+            const v = await getVelocityMultiplier(pair);
+            velocityHigh = v > 2;
+          } catch {
+            /* ignore */
+          }
+        }
+        let corroborated = false;
+        if (article.processed) {
+          try {
+            corroborated = await isCorroborated(article.id, 30);
+          } catch {
+            /* ignore */
+          }
+        }
+        articleMeta[article.id] = {
+          corroborated,
+          velocityHigh,
+          triggeredPositionId: triggerMap[article.id] ?? null,
+        };
+      })
+    );
+
     const health = buildBotHealth(lastCron);
 
     return NextResponse.json({
       news,
+      articleMeta,
       sentiment,
       strategies,
       positions,
       trades,
       analytics,
       portfolio,
+      signalQuality,
+      categoryStats,
       health,
       liveTrading: process.env.NEXT_PUBLIC_LIVE_TRADING === "true",
     });
@@ -66,7 +113,7 @@ async function buildStrategyStatus(
   const [lastSignal, todayCount, open] = await Promise.all([
     getLastSignalForStrategy(id),
     countPositionsOpenedToday(id),
-    import("@/lib/db").then((m) => m.getOpenPositionsByStrategy(id)),
+    getOpenPositionsByStrategy(id),
   ]);
 
   let status = "waiting";
