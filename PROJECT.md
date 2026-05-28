@@ -62,33 +62,92 @@ Achieve **9% net monthly return** (after fees) through **news and sentiment-driv
 
 ## Three Strategies
 
+The bot runs **three independent long-only strategies** on Kraken spot (paper mode). Each writes to `positions` with a `strategy` key: `momentum`, `sentimentMomentum`, or `fearGreed`.
+
+| # | Name | File | Runs |
+|---|------|------|------|
+| 1 | Breaking News Momentum | `lib/strategies/momentum.ts` | Every cron cycle (5 min) |
+| 2 | Sentiment Momentum (Daily Lag) | `lib/strategies/sentimentMomentum.ts` | ~00:05 UTC daily (+ test run) |
+| 3 | Fear & Greed Contrarian | `lib/strategies/fearGreed.ts` | Every cron cycle (5 min) |
+
+Exit rules for open positions are enforced in `lib/positionManager.ts` (stop/TP/time-stop per strategy).
+
+---
+
 ### 1. Breaking News Momentum (`lib/strategies/momentum.ts`)
 
-- **Entry:** Article with sentiment ≥ 0.65, confidence ≥ 0.7, category in `bullish` / `regulatory_positive` / `listing_announcement`, published within 30 minutes.
-- **Action:** Long first affected Kraken spot pair (skip if pair already open or 24h move > +8%).
-- **Size:** 3% of portfolio. **Max 2** simultaneous momentum positions.
-- **Exits:** Stop −2.5%, take profit +4%, time stop 4 hours.
-- **Bearish:** Score ≤ −0.65 (hack/regulatory/bearish) → **no short**; log to `strategy_signals` with `skip_reason = no_short_on_spot`.
+**Strategy ID:** `momentum`
+
+**Entry (all must pass in live mode):**
+- Article scored with sentiment ≥ 0.65, base confidence ≥ 0.7
+- Category in `bullish`, `regulatory_positive`, or `listing_announcement`
+- Published within **30 minutes**
+- **Primary source only** — `is_syndicated = false` (syndicated copies used for corroboration, not as triggers)
+- **Multi-source corroboration** — at least one other outlet within 30 min, same direction, overlapping pair (`lib/confirmation.ts`)
+- **Effective confidence** — base confidence boosted by news velocity multiplier (up to ~1.3×, capped at 1.0) (`lib/velocity.ts`)
+- **Funding filter** — skip if Binance perp funding > 0.03%/8h (crowded longs) (`lib/fundingRate.ts`)
+- Skip if pair already has an open position, or 24h price already moved **> +8%**
+
+**Action:** Market long on affected Kraken spot pair (BTC, ETH, SOL, LINK, AVAX, DOT).
+
+**Sizing:** 3% of portfolio per trade. **Max 2** simultaneous momentum positions.
+
+**Exits** (via `positionManager`): Stop −2.5%, take profit +4%, **time stop 4 hours**.
+
+**Bearish handling:** Articles with score ≤ −0.65 (hack/regulatory/bearish categories) → **no short**; logged to `strategy_signals` with `skip_reason = no_short_on_spot`.
+
+**Test run:** Corroboration and funding filters bypassed; min position $50; always simulated.
 
 *Research basis:* Event-driven momentum around information shocks.
 
+---
+
 ### 2. Sentiment Momentum — Daily Lag (`lib/strategies/sentimentMomentum.ts`)
 
-- **Schedule:** ~00:05 UTC daily (checked each cron; runs in 00:02–00:08 UTC window).
-- **Logic:** Compare avg sentiment last 24h vs prior 24h.
-- **If change > +0.15 and avg > 0:** Long BTC 4% + ETH 4%.
-- **If change < −0.15:** Close sentiment-momentum positions.
-- **Hold:** 24 hours then re-evaluate.
+**Strategy ID:** `sentimentMomentum`
+
+**Schedule:** ~00:05 UTC daily (cron checks 00:02–00:08 UTC window; also runs on Force Test Run).
+
+**Logic:** Compare **exponentially decay-weighted** sentiment (λ = 0.5/hr) for the last 24h vs the prior 24h. Recent articles weigh more than older ones within each window.
+
+- **If weighted change > +0.15 and current weighted avg > 0:** Long **BTC 4%** + **ETH 4%** of portfolio
+- **If weighted change < −0.15:** Close all open `sentimentMomentum` positions (no short)
+- **Hold:** Positions auto-closed after **24 hours** by `positionManager`, then re-evaluated next daily window
+
+Weighted and raw 24h averages are both stored on `sentiment_snapshots` (`avg_score_24h`, `weighted_avg_24h`).
 
 *Research basis:* Sasso (2024) — lagged aggregate sentiment and subsequent returns.
 
+---
+
 ### 3. Fear & Greed Contrarian (`lib/strategies/fearGreed.ts`)
 
-- **Entry:** F&G ≤ 20 → DCA BTC at 3% (max 5 positions, 15% total allocation).
-- **Exit:** F&G ≥ 80 → close all F&G positions.
-- **No time stop** — hold until greed exit.
+**Strategy ID:** `fearGreed`
+
+**Entry:** Fear & Greed index **≤ 20** (Extreme Fear) → DCA **BTC** long at **3%** of portfolio per entry.
+
+**Ladder:** Each extreme-fear event can open another BTC position (same pair allowed) until caps hit — **max 5** open F&G positions, **15%** total portfolio allocation from this strategy.
+
+**Exit:** F&G **≥ 80** (Extreme Greed) → close **all** `fearGreed` positions.
+
+**No time stop** — hold until greed exit (only F&G strategy without a fixed time stop).
 
 *Research basis:* Behavioral contrarianism at sentiment extremes.
+
+---
+
+### Shared signal infrastructure (not separate strategies)
+
+These modules filter or enrich signals used by the strategies above:
+
+| Module | Role |
+|--------|------|
+| `lib/sentiment.ts` | GPT-4o-mini scores **headline + summary**; results cached on `news_articles` |
+| `lib/deduplication.ts` | Marks syndicated/repeated stories (`is_syndicated`); syndicated items corroborate but do not trigger momentum |
+| `lib/confirmation.ts` | Multi-outlet corroboration check for momentum |
+| `lib/fundingRate.ts` | Binance perp funding rate filter for momentum longs |
+| `lib/velocity.ts` | News velocity multiplier vs 7-day baseline |
+| `lib/positionManager.ts` | Stop-loss, take-profit, and time-stop enforcement on open positions |
 
 ---
 
