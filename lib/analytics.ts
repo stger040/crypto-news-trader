@@ -16,6 +16,12 @@ import type {
 
 const MONTHLY_TARGET_PCT = 9;
 
+function toIsoDate(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (value == null) return "";
+  return String(value);
+}
+
 function computeSharpe(returns: number[]): number {
   if (returns.length < 2) return 0;
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
@@ -80,7 +86,7 @@ function buildRollingMetrics(
   return [30, 60, 90].map((days) => {
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     const subset = allTrades.filter(
-      (t) => t.closed_at && new Date(t.closed_at).getTime() > cutoff
+      (t) => t.closed_at && new Date(toIsoDate(t.closed_at)).getTime() > cutoff
     );
     const returns = subset.map((t) => Number(t.pnl_pct ?? 0) / 100);
     return {
@@ -166,7 +172,7 @@ export async function buildAnalytics(): Promise<AnalyticsSummary> {
   const monthlyMap = new Map<string, number>();
   for (const t of trades) {
     if (!t.closed_at) continue;
-    const month = t.closed_at.slice(0, 7);
+    const month = toIsoDate(t.closed_at).slice(0, 7);
     monthlyMap.set(
       month,
       (monthlyMap.get(month) ?? 0) + Number(t.pnl_usd ?? 0)
@@ -192,7 +198,7 @@ export async function buildAnalytics(): Promise<AnalyticsSummary> {
   let btcReturnPct = 0;
   if (firstSnapshot?.captured_at) {
     const [startPrice, endPrice] = await Promise.all([
-      fetchBtcPriceAtDate(firstSnapshot.captured_at),
+      fetchBtcPriceAtDate(toIsoDate(firstSnapshot.captured_at)),
       getKrakenPrice("BTC"),
     ]);
     if (startPrice && endPrice) {
