@@ -60,15 +60,16 @@ Achieve **9% net monthly return** (after fees) through **news and sentiment-driv
 
 ---
 
-## Three Strategies
+## Four Strategies
 
-The bot runs **three independent long-only strategies** on Kraken spot (paper mode). Each writes to `positions` with a `strategy` key: `momentum`, `sentimentMomentum`, or `fearGreed`.
+The bot runs **four independent long-only strategies** on Kraken spot (paper mode). Each writes to `positions` with a `strategy` key: `momentum`, `sentimentMomentum`, `fearGreed`, or `capitulationBounce`.
 
 | # | Name | File | Runs |
 |---|------|------|------|
 | 1 | Breaking News Momentum | `lib/strategies/momentum.ts` | Every cron cycle (5 min) |
 | 2 | Sentiment Momentum (Daily Lag) | `lib/strategies/sentimentMomentum.ts` | ~00:05 UTC daily (+ test run) |
 | 3 | Fear & Greed Contrarian | `lib/strategies/fearGreed.ts` | Every cron cycle (5 min) |
+| 4 | Capitulation Bounce | `lib/strategies/capitulationBounce.ts` | Every cron cycle (5 min) |
 
 Exit rules for open positions are enforced in `lib/positionManager.ts` (stop/TP/time-stop per strategy).
 
@@ -79,7 +80,7 @@ Exit rules for open positions are enforced in `lib/positionManager.ts` (stop/TP/
 **Strategy ID:** `momentum`
 
 **Entry (all must pass in live mode):**
-- Article scored with sentiment ≥ 0.65, base confidence ≥ 0.7
+- Article scored with sentiment ≥ regime threshold (0.55 bull / 0.65 neutral / 0.75 bear), base confidence ≥ 0.7
 - Category in `bullish`, `regulatory_positive`, or `listing_announcement`
 - Published within **30 minutes**
 - **Primary source only** — `is_syndicated = false` (syndicated copies used for corroboration, not as triggers)
@@ -90,7 +91,7 @@ Exit rules for open positions are enforced in `lib/positionManager.ts` (stop/TP/
 
 **Action:** Market long on affected Kraken spot pair (BTC, ETH, SOL, LINK, AVAX, DOT).
 
-**Sizing:** 3% of portfolio per trade. **Max 2** simultaneous momentum positions.
+**Sizing:** 3% of portfolio per trade (1.5% in bear). **Max 2** simultaneous momentum positions.
 
 **Exits** (via `positionManager`): Stop −2.5%, take profit +4%, **time stop 4 hours**.
 
@@ -110,8 +111,9 @@ Exit rules for open positions are enforced in `lib/positionManager.ts` (stop/TP/
 
 **Logic:** Compare **exponentially decay-weighted** sentiment (λ = 0.5/hr) for the last 24h vs the prior 24h. Recent articles weigh more than older ones within each window.
 
-- **If weighted change > +0.15 and current weighted avg > 0:** Long **BTC 4%** + **ETH 4%** of portfolio
+- **If weighted change > +0.15 (+0.12 in bull regime) and current weighted avg > 0:** Long **BTC 4%** + **ETH 4%** of portfolio
 - **If weighted change < −0.15:** Close all open `sentimentMomentum` positions (no short)
+- **Bear regime:** Daily long entries skipped; positions closed on regime flip to bear
 - **Hold:** Positions auto-closed after **24 hours** by `positionManager`, then re-evaluated next daily window
 
 Weighted and raw 24h averages are both stored on `sentiment_snapshots` (`avg_score_24h`, `weighted_avg_24h`).
@@ -124,7 +126,7 @@ Weighted and raw 24h averages are both stored on `sentiment_snapshots` (`avg_sco
 
 **Strategy ID:** `fearGreed`
 
-**Entry:** Fear & Greed index **≤ 20** (Extreme Fear) → DCA **BTC** long at **3%** of portfolio per entry.
+**Entry:** Fear & Greed **≤ 20** (≤ 15 in bull regime). Tiered sizing: F&G 15–20 → 3%, 10–14 → 4.5%, < 10 → 6% of portfolio per entry.
 
 **Ladder:** Each extreme-fear event can open another BTC position (same pair allowed) until caps hit — **max 5** open F&G positions, **15%** total portfolio allocation from this strategy.
 
@@ -135,6 +137,50 @@ Weighted and raw 24h averages are both stored on `sentiment_snapshots` (`avg_sco
 *Research basis:* Behavioral contrarianism at sentiment extremes.
 
 ---
+
+## Regime Detection & Circuit Breakers
+
+### Regime engine (`lib/regime.ts`)
+
+Six-signal voting determines market regime (`bull` / `bear` / `neutral`):
+
+1. BTC price vs 200-day SMA (Kraken OHLC)
+2. 50-day vs 200-day SMA cross + slope
+3. 30-day BTC return
+4. Fear & Greed 7-day average (`sentiment_snapshots`)
+5. BTC dominance trend (CoinGecko global, 30s cache)
+6. Binance BTC funding direction (`lib/fundingRate.ts`)
+
+**Majority rule:** 4 of 6 signals → regime. Anti-whipsaw: 2 consecutive flip confirmations + **10-day lock** after confirmed flip. Snapshots stored in `regime_snapshots`.
+
+### Circuit breakers (`lib/circuitBreaker.ts`)
+
+| Type | Trigger | Effect |
+|------|---------|--------|
+| Daily | Portfolio −5% vs 24h snapshot | 24h halt — exits only |
+| Weekly | Portfolio −15% vs 7d snapshot | 7d halt — exits only |
+| Macro | Bear regime + BTC >20% below 200d SMA (2 consecutive snapshots) | DCA-only mode (F&G only) |
+
+Capitulation bounce **not blocked** by daily/weekly halts (crisis strategy).
+
+---
+
+### Regime-adaptive strategy behavior
+
+- **Momentum:** Sentiment thresholds 0.55 (bull) / 0.65 (neutral) / 0.75 (bear); half-size in bear; bear entries require F&G < 45
+- **Sentiment Momentum:** Disabled in bear; auto-closes on regime flip; bull threshold +0.12
+- **Fear & Greed:** Tiered sizing (3% / 4.5% / 6%); bull triggers at F&G < 15; bear keeps ≤ 20
+
+---
+
+### 4. Capitulation Bounce (`lib/strategies/capitulationBounce.ts`)
+
+**Strategy ID:** `capitulationBounce`
+
+**Trigger (all required):** BTC 24h drop > 15%, F&G dropped > 10 pts vs 48h ago, funding < −0.005%/8h, no open capitulation position.
+
+**Action:** Long BTC at **5%** of portfolio. **Exits:** −8% SL, +10% TP, **48h hard time stop**. One position max.
+
 
 ### Shared signal infrastructure (not separate strategies)
 
@@ -147,6 +193,8 @@ These modules filter or enrich signals used by the strategies above:
 | `lib/confirmation.ts` | Multi-outlet corroboration check for momentum |
 | `lib/fundingRate.ts` | Binance perp funding rate filter for momentum longs |
 | `lib/velocity.ts` | News velocity multiplier vs 7-day baseline |
+| `lib/regime.ts` | 6-signal regime detection with anti-whipsaw lock |
+| `lib/circuitBreaker.ts` | Daily/weekly/macro portfolio halts |
 | `lib/positionManager.ts` | Stop-loss, take-profit, and time-stop enforcement on open positions |
 
 ---
@@ -184,6 +232,8 @@ Implementation: `lib/newsFetcher.ts` (rss-parser + fetch). Per-source last fetch
 | `strategy_signals` | Every signal, including skipped bearish |
 | `feed_sync` | Last RSS fetch time per source |
 | `cron_runs` | Cron success/failure + duration (Bot Health) |
+| `regime_snapshots` | Regime votes, SMA metrics, lock state |
+| `circuit_breaker_state` | Halt timers + portfolio high water mark |
 
 All SQL lives in `lib/db.ts` — no inline SQL elsewhere.
 
@@ -244,7 +294,9 @@ Dark navy/slate UI with amber accents (`app/page.tsx` + `components/`).
 | Strategies | Open positions + `strategy_signals` |
 | Open Positions | Live Kraken prices + DB positions |
 | Trade History | Last 30 closed positions |
+| Regime Indicator | Current regime, age, signal votes, circuit breaker |
 | Analytics | Win rate, Sharpe, monthly P&L, 9% target badge |
+| Portfolio Progress | Sortino, profit factor, BTC excess return, rolling metrics, regime attribution |
 | Bot Health | Last `cron_runs` entry (< 6m green, < 15m yellow, else red) |
 | Force Test Run | Calls `/api/request-test-run` (no secret in browser) |
 
@@ -264,6 +316,13 @@ Dark navy/slate UI with amber accents (`app/page.tsx` + `components/`).
 | Break-even win rate (Momentum) | ~50.8% (after round-trip fees) |
 | Funding rate threshold | Skip long if funding > 0.03%/8h |
 | Spot shorting | Never — bearish = cash + log signal |
+| Bull mode sentiment threshold | 0.55 |
+| Bear mode sentiment threshold | 0.75 + F&G < 45 confirmation |
+| Bear mode position size | 1.5% (momentum half-size) |
+| Circuit breaker daily | −5% NAV → 24h halt |
+| Circuit breaker weekly | −15% NAV → 7d halt |
+| Circuit breaker macro | BTC >20% below 200d SMA → DCA only |
+| Capitulation bounce | 5% NAV, −8% SL, +10% TP, 48h time stop |
 
 ---
 
@@ -300,7 +359,9 @@ app/api/dashboard/route.ts     # Dashboard API
 lib/db.ts                      # All Neon queries
 lib/newsFetcher.ts             # RSS + Reddit + F&G
 lib/sentiment.ts               # OpenAI scoring
-lib/strategies/                # momentum, sentimentMomentum, fearGreed
+lib/strategies/                # momentum, sentimentMomentum, fearGreed, capitulationBounce
+lib/regime.ts                  # Regime detection engine
+lib/circuitBreaker.ts          # Portfolio circuit breakers
 lib/fundingRate.ts             # Binance perp funding filter
 lib/confirmation.ts          # Multi-source corroboration
 lib/velocity.ts                # News velocity multiplier
@@ -308,6 +369,8 @@ lib/deduplication.ts           # Semantic syndication detection
 lib/cronRunner.ts              # Orchestrates each cycle
 components/Dashboard.tsx       # Main UI
 db/migrations/001_initial.sql  # Schema reference
+components/PortfolioProgress.tsx  # Benchmark dashboard
+components/RegimeIndicator.tsx    # Regime status panel
 vercel.json                    # Cron schedule
 ```
 
@@ -317,7 +380,6 @@ vercel.json                    # Cron schedule
 
 - Live Kraken order signing and execution
 - Coinbase listing detector (Stage 2)
-- ETF flow regime overlay (Stage 2)
 - Polymarket overlay (Stage 3)
 - Walk-forward backtesting harness (future)
 - Multi-user dashboard authentication
@@ -327,6 +389,19 @@ vercel.json                    # Cron schedule
 ---
 
 ## Session Log
+
+### 2026-05-26 — Bear-market awareness + portfolio progress
+
+- Added regime detection engine (`lib/regime.ts`): 6-signal voting (BTC/200d SMA, 50/200 cross, 30d return, F&G 7d avg, BTC dominance, funding); 4-of-6 majority + 10-day regime lock + 2-bar confirm
+- Added circuit breakers (`lib/circuitBreaker.ts`): −5% daily halt 24h, −15% weekly halt 7d, −20% below 200d SMA macro halt (DCA-only mode)
+- Regime-adaptive momentum: thresholds 0.55/0.65/0.75 by regime, half-size in bear, F&G<45 bear confirmation
+- Sentiment Momentum disabled in bear regime, auto-closes positions on regime flip to bear
+- Fear & Greed upgraded to tiered sizing (1× / 1.5× / 2× by F&G depth)
+- Added capitulationBounce strategy (`lib/strategies/capitulationBounce.ts`): >15% 24h BTC drop + F&G drop + neg funding; 48h hard time stop, +10% TP, −8% SL
+- Added portfolio progress dashboard (`components/PortfolioProgress.tsx`): Sortino, profit factor, BTC excess return, rolling 30/60/90d metrics, per-regime attribution
+- Added regime status indicator to dashboard (`components/RegimeIndicator.tsx`)
+- DB migrations 006 (regime) and 007 (circuit breaker) applied via Neon MCP
+
 
 ### 2026-05-26 — Initial build
 

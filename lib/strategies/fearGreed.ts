@@ -12,14 +12,24 @@ import {
 } from "../kraken";
 import { getPortfolioCash, getPortfolioTotal } from "../portfolio";
 import { notify } from "../notify";
-import type { CronOptions } from "../types";
+import type { CronOptions, MarketRegime } from "../types";
 
-const EXTREME_FEAR = 20;
 const EXTREME_GREED = 80;
 const MAX_POSITIONS = 5;
-const POSITION_SIZE_PCT = 0.03;
+const BASE_POSITION_SIZE_PCT = 0.03;
 const MAX_ALLOCATION_PCT = 0.15;
 const MIN_TEST_SIZE_USD = 50;
+
+function getFearTriggerThreshold(regime: MarketRegime): number {
+  return regime === "bull" ? 15 : 20;
+}
+
+function getTieredSizePct(fngValue: number): number {
+  if (fngValue < 10) return BASE_POSITION_SIZE_PCT * 2;
+  if (fngValue <= 14) return BASE_POSITION_SIZE_PCT * 1.5;
+  if (fngValue <= 20) return BASE_POSITION_SIZE_PCT;
+  return BASE_POSITION_SIZE_PCT;
+}
 
 export interface FearGreedResult {
   action: string;
@@ -30,6 +40,7 @@ export async function runFearGreedStrategy(
   fngValue: number,
   options: CronOptions = {}
 ): Promise<FearGreedResult> {
+  const regime: MarketRegime = options.regime ?? "neutral";
   const fgPositions = await getOpenPositionsByStrategy("fearGreed");
 
   if (fngValue >= EXTREME_GREED || (options.testRun && fngValue >= 80)) {
@@ -56,6 +67,7 @@ export async function runFearGreedStrategy(
       signal_type: "exit",
       fear_greed_value: fngValue,
       acted_on: closed > 0,
+      regime,
     });
 
     return {
@@ -64,9 +76,10 @@ export async function runFearGreedStrategy(
     };
   }
 
-  const effectiveFng = options.testRun ? EXTREME_FEAR : fngValue;
+  const fearThreshold = getFearTriggerThreshold(regime);
+  const effectiveFng = options.testRun ? fearThreshold : fngValue;
 
-  if (effectiveFng > EXTREME_FEAR && !options.testRun) {
+  if (effectiveFng > fearThreshold && !options.testRun) {
     return { action: "wait", detail: `F&G ${fngValue} — not extreme fear` };
   }
 
@@ -78,6 +91,7 @@ export async function runFearGreedStrategy(
       fear_greed_value: fngValue,
       acted_on: false,
       skip_reason: "max_fg_positions",
+      regime,
     });
     return { action: "skip", detail: "Max 5 F&G positions reached" };
   }
@@ -87,7 +101,8 @@ export async function runFearGreedStrategy(
     (s, p) => s + Number(p.size_usd),
     0
   );
-  let sizeUsd = portfolioTotal * POSITION_SIZE_PCT;
+  const tierPct = getTieredSizePct(effectiveFng);
+  let sizeUsd = portfolioTotal * tierPct;
   if (options.testRun) sizeUsd = Math.max(sizeUsd, MIN_TEST_SIZE_USD);
 
   if (fgAllocation + sizeUsd > portfolioTotal * MAX_ALLOCATION_PCT) {
@@ -98,6 +113,7 @@ export async function runFearGreedStrategy(
   if (cash < sizeUsd) {
     return { action: "skip", detail: "Insufficient cash" };
   }
+
   const entryPrice = await getKrakenPrice("BTC");
   await placeMarketOrder("BTC", "buy", sizeUsd);
 
@@ -108,6 +124,7 @@ export async function runFearGreedStrategy(
     entry_price: entryPrice,
     size_usd: sizeUsd,
     simulated: true,
+    regime,
   });
 
   await logSignal({
@@ -116,14 +133,21 @@ export async function runFearGreedStrategy(
     signal_type: "entry",
     fear_greed_value: fngValue,
     acted_on: true,
+    regime,
   });
+
+  const tierLabel =
+    effectiveFng < 10 ? "Panic" : effectiveFng <= 14 ? "Deep Fear" : "Extreme Fear";
 
   await notify(
     "F&G DCA",
-    `BTC @ $${entryPrice.toFixed(2)} — Extreme Fear (${fngValue})`
+    `BTC @ $${entryPrice.toFixed(2)} — ${tierLabel} (${fngValue}) [${regime}]`
   );
 
-  return { action: "open", detail: `DCA BTC at F&G ${fngValue}` };
+  return {
+    action: "open",
+    detail: `DCA BTC at F&G ${fngValue} (${(tierPct * 100).toFixed(1)}% size)`,
+  };
 }
 
 export async function getLatestFearGreedFromDb(): Promise<number> {

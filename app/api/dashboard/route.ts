@@ -15,10 +15,13 @@ import { buildAnalytics, getCategoryWinRatesAnalytics } from "@/lib/analytics";
 import { computePortfolioSnapshot } from "@/lib/portfolio";
 import { isCorroborated } from "@/lib/confirmation";
 import { getVelocityMultiplier } from "@/lib/velocity";
+import { getRegimeStatusForDashboard } from "@/lib/regime";
+import { getCircuitBreakerDashboardStatus } from "@/lib/circuitBreaker";
 import type {
   BotHealthStatus,
   StrategyPanelStatus,
   NewsArticleMeta,
+  RegimeStatus,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -36,6 +39,8 @@ export async function GET() {
       signalQuality,
       categoryStats,
       triggerMap,
+      regimeBase,
+      cbDash,
     ] = await Promise.all([
       getRecentArticles(20),
       getPositionsWithPnL(),
@@ -47,12 +52,15 @@ export async function GET() {
       getSignalQualityStats(),
       getCategoryWinRatesAnalytics(),
       getArticleTriggerIds(),
+      getRegimeStatusForDashboard(),
+      getCircuitBreakerDashboardStatus(),
     ]);
 
     const strategies: StrategyPanelStatus[] = await Promise.all([
       buildStrategyStatus("momentum", "Breaking News Momentum"),
       buildStrategyStatus("sentimentMomentum", "Sentiment Momentum"),
       buildStrategyStatus("fearGreed", "Fear & Greed Contrarian"),
+      buildStrategyStatus("capitulationBounce", "Capitulation Bounce"),
     ]);
 
     const articleMeta: Record<number, NewsArticleMeta> = {};
@@ -84,6 +92,13 @@ export async function GET() {
       })
     );
 
+    const regimeStatus: RegimeStatus = {
+      ...regimeBase,
+      circuitBreakerActive: cbDash.active,
+      circuitBreakerType: cbDash.type,
+      macroHaltActive: cbDash.macroHaltActive,
+    };
+
     const health = buildBotHealth(lastCron);
 
     return NextResponse.json({
@@ -98,6 +113,7 @@ export async function GET() {
       signalQuality,
       categoryStats,
       health,
+      regimeStatus,
       liveTrading: process.env.NEXT_PUBLIC_LIVE_TRADING === "true",
     });
   } catch (e) {

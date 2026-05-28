@@ -1,8 +1,11 @@
 import { neon, neonConfig } from "@neondatabase/serverless";
 import type {
+  CircuitBreakerState,
+  MarketRegime,
   NewsArticle,
   PortfolioSnapshot,
   Position,
+  RegimeSnapshot,
   SentimentSnapshot,
   StrategySignal,
 } from "./types";
@@ -95,7 +98,8 @@ export async function getRecentArticles(limit = 20): Promise<NewsArticle[]> {
 
 export async function getRecentHighScoreArticles(
   minutes = 30,
-  primaryOnly = true
+  primaryOnly = true,
+  minScore = 0.65
 ): Promise<NewsArticle[]> {
   const sql = getSql();
   if (primaryOnly) {
@@ -103,7 +107,7 @@ export async function getRecentHighScoreArticles(
       SELECT * FROM news_articles
       WHERE processed = true
         AND COALESCE(is_syndicated, false) = false
-        AND sentiment_score >= 0.65
+        AND sentiment_score >= ${minScore}
         AND confidence >= 0.7
         AND sentiment_category IN ('bullish', 'regulatory_positive', 'listing_announcement')
         AND published_at > NOW() - INTERVAL '1 minute' * ${minutes}
@@ -113,7 +117,7 @@ export async function getRecentHighScoreArticles(
   return q<NewsArticle>(sql`
     SELECT * FROM news_articles
     WHERE processed = true
-      AND sentiment_score >= 0.65
+      AND sentiment_score >= ${minScore}
       AND confidence >= 0.7
       AND sentiment_category IN ('bullish', 'regulatory_positive', 'listing_announcement')
       AND published_at > NOW() - INTERVAL '1 minute' * ${minutes}
@@ -205,16 +209,17 @@ export async function openPosition(data: {
   size_usd: number;
   trigger_article_id?: number | null;
   simulated?: boolean;
+  regime?: string | null;
 }): Promise<Position> {
   const sql = getSql();
   const row = await q1<Position>(sql`
     INSERT INTO positions (
       pair, side, strategy, entry_price, size_usd,
-      trigger_article_id, simulated
+      trigger_article_id, simulated, regime
     ) VALUES (
       ${data.pair}, ${data.side}, ${data.strategy}, ${data.entry_price},
       ${data.size_usd}, ${data.trigger_article_id ?? null},
-      ${data.simulated ?? true}
+      ${data.simulated ?? true}, ${data.regime ?? null}
     )
     RETURNING *
   `);
@@ -341,18 +346,20 @@ export async function logSignal(data: {
   skip_reason?: string | null;
   funding_rate?: number | null;
   velocity_multiplier?: number | null;
+  regime?: string | null;
 }): Promise<StrategySignal> {
   const sql = getSql();
   const row = await q1<StrategySignal>(sql`
     INSERT INTO strategy_signals (
       strategy, pair, signal_type, sentiment_score,
       fear_greed_value, acted_on, skip_reason,
-      funding_rate, velocity_multiplier
+      funding_rate, velocity_multiplier, regime
     ) VALUES (
       ${data.strategy}, ${data.pair ?? null}, ${data.signal_type ?? null},
       ${data.sentiment_score ?? null}, ${data.fear_greed_value ?? null},
       ${data.acted_on ?? false}, ${data.skip_reason ?? null},
-      ${data.funding_rate ?? null}, ${data.velocity_multiplier ?? null}
+      ${data.funding_rate ?? null}, ${data.velocity_multiplier ?? null},
+      ${data.regime ?? null}
     )
     RETURNING *
   `);
@@ -643,5 +650,182 @@ export async function getArticlesPrior24h(): Promise<NewsArticle[]> {
       AND sentiment_score IS NOT NULL
       AND published_at BETWEEN NOW() - INTERVAL '48 hours' AND NOW() - INTERVAL '24 hours'
     ORDER BY published_at DESC
+  `);
+}
+
+
+export async function saveRegimeSnapshot(data: {
+  regime: MarketRegime;
+  signals_bull: number;
+  signals_bear: number;
+  signals_neutral: number;
+  btc_vs_200d_sma?: number | null;
+  sma50_vs_sma200?: number | null;
+  return_30d?: number | null;
+  fear_greed_avg7d?: number | null;
+  btc_dominance_pct?: number | null;
+  btc_dominance_trend?: string | null;
+  funding_direction?: string | null;
+  previous_regime?: string | null;
+  regime_age_days?: number;
+  locked_until?: Date | null;
+}): Promise<RegimeSnapshot> {
+  const sql = getSql();
+  const row = await q1<RegimeSnapshot>(sql`
+    INSERT INTO regime_snapshots (
+      regime, signals_bull, signals_bear, signals_neutral,
+      btc_vs_200d_sma, sma50_vs_sma200, return_30d,
+      fear_greed_avg7d, fear_greed_value, btc_dominance_trend, funding_direction,
+      previous_regime, regime_age_days, locked_until
+    ) VALUES (
+      ${data.regime}, ${data.signals_bull}, ${data.signals_bear},
+      ${data.signals_neutral}, ${data.btc_vs_200d_sma ?? null},
+      ${data.sma50_vs_sma200 ?? null}, ${data.return_30d ?? null},
+      ${data.fear_greed_avg7d ?? null}, ${data.btc_dominance_pct ?? null},
+      ${data.btc_dominance_trend ?? null}, ${data.funding_direction ?? null},
+      ${data.previous_regime ?? null}, ${data.regime_age_days ?? 0},
+      ${data.locked_until ? data.locked_until.toISOString() : null}
+    )
+    RETURNING *
+  `);
+  if (!row) throw new Error("Failed to save regime snapshot");
+  return row;
+}
+
+export async function getLatestRegimeSnapshot(): Promise<RegimeSnapshot | null> {
+  const sql = getSql();
+  return q1<RegimeSnapshot>(sql`
+    SELECT * FROM regime_snapshots ORDER BY captured_at DESC LIMIT 1
+  `);
+}
+
+export async function getRecentRegimeSnapshots(
+  limit = 2
+): Promise<RegimeSnapshot[]> {
+  const sql = getSql();
+  return q<RegimeSnapshot>(sql`
+    SELECT * FROM regime_snapshots ORDER BY captured_at DESC LIMIT ${limit}
+  `);
+}
+
+export async function getFearGreedAvg7d(): Promise<number | null> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT AVG(fear_greed_value)::float AS avg
+    FROM (
+      SELECT fear_greed_value FROM sentiment_snapshots
+      ORDER BY captured_at DESC LIMIT 7
+    ) recent
+  `;
+  const avg = (rows[0] as { avg: number | null })?.avg;
+  return avg ?? null;
+}
+
+export async function getRecentSentimentSnapshots(
+  limit = 3
+): Promise<SentimentSnapshot[]> {
+  const sql = getSql();
+  return q<SentimentSnapshot>(sql`
+    SELECT * FROM sentiment_snapshots ORDER BY captured_at DESC LIMIT ${limit}
+  `);
+}
+
+export async function getSentimentSnapshotNearHoursAgo(
+  hours: number
+): Promise<SentimentSnapshot | null> {
+  const sql = getSql();
+  return q1<SentimentSnapshot>(sql`
+    SELECT * FROM sentiment_snapshots
+    WHERE captured_at <= NOW() - INTERVAL '1 hour' * ${hours}
+    ORDER BY captured_at DESC
+    LIMIT 1
+  `);
+}
+
+export async function getCircuitBreakerState(): Promise<CircuitBreakerState | null> {
+  const sql = getSql();
+  return q1<CircuitBreakerState>(sql`
+    SELECT * FROM circuit_breaker_state WHERE id = 1
+  `);
+}
+
+export async function updateCircuitBreakerState(data: {
+  daily_halt_until?: Date | null;
+  weekly_halt_until?: Date | null;
+  macro_halt_active?: boolean;
+  portfolio_high_water_mark?: number;
+}): Promise<void> {
+  const sql = getSql();
+  const current = await getCircuitBreakerState();
+  if (!current) {
+    await sql`
+      INSERT INTO circuit_breaker_state (id) VALUES (1) ON CONFLICT DO NOTHING
+    `;
+  }
+  await sql`
+    UPDATE circuit_breaker_state SET
+      daily_halt_until = ${data.daily_halt_until !== undefined ? (data.daily_halt_until ? data.daily_halt_until.toISOString() : null) : current?.daily_halt_until ?? null},
+      weekly_halt_until = ${data.weekly_halt_until !== undefined ? (data.weekly_halt_until ? data.weekly_halt_until.toISOString() : null) : current?.weekly_halt_until ?? null},
+      macro_halt_active = ${data.macro_halt_active ?? current?.macro_halt_active ?? false},
+      portfolio_high_water_mark = ${data.portfolio_high_water_mark ?? current?.portfolio_high_water_mark ?? 10000},
+      last_checked_at = NOW()
+    WHERE id = 1
+  `;
+}
+
+export async function getPortfolioSnapshot7dAgo(): Promise<PortfolioSnapshot | null> {
+  const sql = getSql();
+  return q1<PortfolioSnapshot>(sql`
+    SELECT * FROM portfolio_snapshots
+    WHERE captured_at <= NOW() - INTERVAL '7 days'
+    ORDER BY captured_at DESC
+    LIMIT 1
+  `);
+}
+
+export async function getFirstPortfolioSnapshot(): Promise<PortfolioSnapshot | null> {
+  const sql = getSql();
+  return q1<PortfolioSnapshot>(sql`
+    SELECT * FROM portfolio_snapshots ORDER BY captured_at ASC LIMIT 1
+  `);
+}
+
+export async function getClosedTradesSince(
+  days: number,
+  limit = 500
+): Promise<Position[]> {
+  const sql = getSql();
+  return q<Position>(sql`
+    SELECT p.*, na.title AS trigger_title
+    FROM positions p
+    LEFT JOIN news_articles na ON na.id = p.trigger_article_id
+    WHERE p.closed_at IS NOT NULL
+      AND p.closed_at > NOW() - INTERVAL '1 day' * ${days}
+    ORDER BY p.closed_at DESC
+    LIMIT ${limit}
+  `);
+}
+
+export async function getClosedTradesAll(limit = 500): Promise<Position[]> {
+  const sql = getSql();
+  return q<Position>(sql`
+    SELECT p.*, na.title AS trigger_title
+    FROM positions p
+    LEFT JOIN news_articles na ON na.id = p.trigger_article_id
+    WHERE p.closed_at IS NOT NULL
+    ORDER BY p.closed_at DESC
+    LIMIT ${limit}
+  `);
+}
+
+export async function getRegimeSnapshotDaysAgo(
+  daysAgo: number
+): Promise<RegimeSnapshot | null> {
+  const sql = getSql();
+  return q1<RegimeSnapshot>(sql`
+    SELECT * FROM regime_snapshots
+    WHERE captured_at <= NOW() - INTERVAL '1 day' * ${daysAgo}
+    ORDER BY captured_at DESC
+    LIMIT 1
   `);
 }

@@ -1,5 +1,7 @@
 export type TradingPair = "BTC" | "ETH" | "SOL" | "LINK" | "AVAX" | "DOT";
 
+export type MarketRegime = "bull" | "bear" | "neutral";
+
 export type SentimentCategory =
   | "bullish"
   | "bearish"
@@ -64,6 +66,7 @@ export interface Position {
   exit_reason: string | null;
   trigger_article_id: number | null;
   simulated: boolean;
+  regime?: string | null;
   trigger_title?: string | null;
 }
 
@@ -89,6 +92,67 @@ export interface StrategySignal {
   skip_reason: string | null;
   funding_rate?: number | null;
   velocity_multiplier?: number | null;
+  regime?: string | null;
+}
+
+export interface RegimeSnapshot {
+  id: number;
+  captured_at: string;
+  regime: MarketRegime;
+  signals_bull: number;
+  signals_bear: number;
+  signals_neutral: number;
+  btc_vs_200d_sma: number | null;
+  sma50_vs_sma200: number | null;
+  return_30d: number | null;
+  fear_greed_avg7d: number | null;
+  fear_greed_value?: number | null;
+  btc_dominance_trend: string | null;
+  funding_direction: string | null;
+  previous_regime: string | null;
+  regime_age_days: number;
+  locked_until: string | null;
+}
+
+export interface CircuitBreakerState {
+  id: number;
+  daily_halt_until: string | null;
+  weekly_halt_until: string | null;
+  macro_halt_active: boolean;
+  last_checked_at: string;
+  portfolio_high_water_mark: number;
+}
+
+export interface CircuitBreakerStatus {
+  halted: boolean;
+  reason: string | null;
+  haltType: "daily" | "weekly" | "macro" | null;
+  haltUntil: Date | null;
+}
+
+export interface RollingMetrics {
+  periodDays: number;
+  sharpe: number;
+  sortino: number;
+  tradeCount: number;
+}
+
+export interface RegimeAttribution {
+  regime: string;
+  tradeCount: number;
+  winRate: number;
+  avgReturnPct: number;
+  profitFactor: number;
+  totalPnlUsd: number;
+  isReliable: boolean;
+}
+
+export interface BenchmarkExcess {
+  botReturnPct: number;
+  btcReturnPct: number;
+  excessReturnPct: number;
+  highWaterMark: number;
+  currentDrawdownPct: number;
 }
 
 export interface PositionWithPnL {
@@ -105,10 +169,28 @@ export interface AnalyticsSummary {
   avgReturnPct: number;
   monthlyPnl: { month: string; pnl: number }[];
   sharpeRatio: number;
+  sortinoRatio: number;
+  profitFactor: number;
   totalTrades: number;
   totalFees: number;
   monthlyTargetPct: number;
   onTrack: boolean;
+  benchmark: BenchmarkExcess;
+  rollingMetrics: RollingMetrics[];
+  regimeAttribution: RegimeAttribution[];
+  healthInterpretation: string;
+}
+
+export interface RegimeStatus {
+  regime: MarketRegime;
+  regimeAgeDays: number;
+  signalsBull: number;
+  signalsBear: number;
+  signalsNeutral: number;
+  lockedUntil: string | null;
+  circuitBreakerActive: boolean;
+  circuitBreakerType: string | null;
+  macroHaltActive: boolean;
 }
 
 export interface StrategyPanelStatus {
@@ -128,6 +210,9 @@ export interface BotHealthStatus {
 export interface CronOptions {
   testRun?: boolean;
   forceSignal?: boolean;
+  regime?: MarketRegime;
+  previousRegime?: MarketRegime;
+  macroHalt?: boolean;
 }
 
 export interface CronResult {
@@ -141,6 +226,7 @@ export interface CronResult {
   errors: string[];
   durationMs: number;
 }
+
 export interface CategoryStats {
   category: string;
   totalTrades: number;

@@ -11,6 +11,8 @@ import { Analytics } from "./Analytics";
 import { BotHealth } from "./BotHealth";
 import { ForceTestRun } from "./ForceTestRun";
 import { SignalQuality } from "./SignalQuality";
+import { RegimeIndicator } from "./RegimeIndicator";
+import { PortfolioProgress } from "./PortfolioProgress";
 import type {
   AnalyticsSummary,
   BotHealthStatus,
@@ -22,6 +24,7 @@ import type {
   SentimentSnapshot,
   SignalQualityStats,
   StrategyPanelStatus,
+  RegimeStatus,
 } from "@/lib/types";
 
 interface DashboardData {
@@ -40,6 +43,7 @@ interface DashboardData {
   signalQuality: SignalQualityStats;
   categoryStats: CategoryStats[];
   health: BotHealthStatus;
+  regimeStatus: RegimeStatus | null;
   liveTrading: boolean;
 }
 
@@ -121,6 +125,9 @@ export function Dashboard() {
       )}
 
       <main className="mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-12">
+        <div className="lg:col-span-12">
+          <RegimeIndicator status={data?.regimeStatus ?? null} />
+        </div>
         <div className="lg:col-span-5">
           <NewsFeed
             articles={data?.news ?? []}
@@ -143,6 +150,46 @@ export function Dashboard() {
                 totalFees: 0,
                 monthlyTargetPct: 9,
                 onTrack: false,
+                sortinoRatio: 0,
+                profitFactor: 0,
+                benchmark: {
+                  botReturnPct: 0,
+                  btcReturnPct: 0,
+                  excessReturnPct: 0,
+                  highWaterMark: 10000,
+                  currentDrawdownPct: 0,
+                },
+                rollingMetrics: [],
+                regimeAttribution: [],
+                healthInterpretation: "Loading…",
+              }
+            }
+          />
+        </div>
+        <div className="lg:col-span-12">
+          <PortfolioProgress
+            data={
+              data?.analytics ?? {
+                winRate: 0,
+                avgReturnPct: 0,
+                monthlyPnl: [],
+                sharpeRatio: 0,
+                sortinoRatio: 0,
+                profitFactor: 0,
+                totalTrades: 0,
+                totalFees: 0,
+                monthlyTargetPct: 9,
+                onTrack: false,
+                benchmark: {
+                  botReturnPct: 0,
+                  btcReturnPct: 0,
+                  excessReturnPct: 0,
+                  highWaterMark: 10000,
+                  currentDrawdownPct: 0,
+                },
+                rollingMetrics: [],
+                regimeAttribution: [],
+                healthInterpretation: "Loading…",
               }
             }
           />

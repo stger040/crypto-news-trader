@@ -13,11 +13,14 @@ import {
 } from "../kraken";
 import { getPortfolioCash, getPortfolioTotal } from "../portfolio";
 import { notify } from "../notify";
-import type { NewsArticle, CronOptions } from "../types";
+import type { NewsArticle, CronOptions, MarketRegime } from "../types";
 
 const POSITION_SIZE_PCT = 0.04;
-const CHANGE_THRESHOLD = 0.15;
 const MIN_TEST_SIZE_USD = 50;
+
+function getChangeThreshold(regime: MarketRegime): number {
+  return regime === "bull" ? 0.12 : 0.15;
+}
 
 export interface SentimentMomentumResult {
   action: string;
@@ -54,15 +57,61 @@ export function shouldRunSentimentMomentumDaily(
 export async function runSentimentMomentumStrategy(
   options: CronOptions = {}
 ): Promise<SentimentMomentumResult> {
+  const regime: MarketRegime = options.regime ?? "neutral";
+  const previousRegime = options.previousRegime ?? regime;
+  const openPositions = await getOpenPositionsByStrategy("sentimentMomentum");
+
+  if (regime === "bear") {
+    if (
+      previousRegime !== "bear" &&
+      openPositions.length > 0 &&
+      !options.testRun
+    ) {
+      for (const pos of openPositions) {
+        const price = await getKrakenPrice(pos.pair);
+        await closePosition(
+          pos.id,
+          price,
+          "regime_flip_bear",
+          estimateFee(Number(pos.size_usd))
+        );
+        await placeMarketOrder(pos.pair, "sell", Number(pos.size_usd));
+      }
+      await notify(
+        "Sentiment Momentum",
+        "📉 Sentiment Momentum disabled — bear regime active"
+      );
+    }
+
+    await logSignal({
+      strategy: "sentimentMomentum",
+      signal_type: "skip",
+      acted_on: false,
+      skip_reason: "bear_regime_disabled",
+      regime,
+    });
+
+    if (openPositions.length > 0 && previousRegime === "bear") {
+      return {
+        action: "hold",
+        detail: "Bear regime — positions closed on flip",
+      };
+    }
+
+    return {
+      action: "skip",
+      detail: "Sentiment momentum disabled in bear regime",
+    };
+  }
+
   const currentArticles = await getArticlesLast24h();
   const priorArticles = await getArticlesPrior24h();
   const currentAvg = computeDecayWeightedAvg(currentArticles);
   const priorAvg = computeDecayWeightedAvg(priorArticles);
   const scoreChange = currentAvg - priorAvg;
+  const changeThreshold = getChangeThreshold(regime);
 
-  const openPositions = await getOpenPositionsByStrategy("sentimentMomentum");
-
-  if (scoreChange < -CHANGE_THRESHOLD) {
+  if (scoreChange < -changeThreshold) {
     for (const pos of openPositions) {
       const price = await getKrakenPrice(pos.pair);
       await closePosition(
@@ -79,6 +128,7 @@ export async function runSentimentMomentumStrategy(
       sentiment_score: currentAvg,
       acted_on: openPositions.length > 0,
       skip_reason: openPositions.length ? undefined : "no_positions_to_close",
+      regime,
     });
     return {
       action: "close",
@@ -86,7 +136,7 @@ export async function runSentimentMomentumStrategy(
     };
   }
 
-  if (scoreChange > CHANGE_THRESHOLD && currentAvg > 0) {
+  if (scoreChange > changeThreshold && currentAvg > 0) {
     const portfolioTotal = await getPortfolioTotal();
     const cash = await getPortfolioCash();
     const opened: string[] = [];
@@ -108,6 +158,7 @@ export async function runSentimentMomentumStrategy(
         entry_price: entryPrice,
         size_usd: sizeUsd,
         simulated: true,
+        regime,
       });
 
       opened.push(pair);
@@ -122,6 +173,7 @@ export async function runSentimentMomentumStrategy(
       signal_type: "bullish",
       sentiment_score: currentAvg,
       acted_on: opened.length > 0,
+      regime,
     });
 
     return {
@@ -144,6 +196,7 @@ export async function runSentimentMomentumStrategy(
       entry_price: entryPrice,
       size_usd: sizeUsd,
       simulated: true,
+      regime,
     });
     return { action: "test_long", detail: "Test run forced BTC long" };
   }

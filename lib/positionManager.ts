@@ -13,6 +13,10 @@ const MOMENTUM_STOP_LOSS = 2.5;
 const MOMENTUM_TAKE_PROFIT = 4;
 const MOMENTUM_TIME_STOP_HOURS = 4;
 
+const CAPITULATION_STOP_LOSS = -8;
+const CAPITULATION_TAKE_PROFIT = 10;
+const CAPITULATION_TIME_STOP_HOURS = 48;
+
 export interface ManageResult {
   closed: string[];
 }
@@ -53,6 +57,19 @@ export async function manageOpenPositions(): Promise<ManageResult> {
     if (pos.strategy === "sentimentMomentum" && ageHours >= 24) {
       shouldClose = true;
       reason = "sentiment_24h_hold";
+    }
+
+    if (pos.strategy === "capitulationBounce") {
+      if (ageHours >= CAPITULATION_TIME_STOP_HOURS) {
+        shouldClose = true;
+        reason = "time_stop_48h";
+      } else if (pnlPct <= CAPITULATION_STOP_LOSS) {
+        shouldClose = true;
+        reason = "stop_loss";
+      } else if (pnlPct >= CAPITULATION_TAKE_PROFIT) {
+        shouldClose = true;
+        reason = "take_profit";
+      }
     }
 
     if (!shouldClose) continue;

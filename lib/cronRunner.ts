@@ -6,10 +6,13 @@ import {
   shouldRunSentimentMomentumDaily,
 } from "./strategies/sentimentMomentum";
 import { runFearGreedStrategy } from "./strategies/fearGreed";
+import { runCapitulationBounceStrategy } from "./strategies/capitulationBounce";
 import { manageOpenPositions } from "./positionManager";
 import { computePortfolioSnapshot } from "./portfolio";
-import { savePortfolioSnapshot, recordCronRun } from "./db";
-import type { CronOptions, CronResult } from "./types";
+import { savePortfolioSnapshot, recordCronRun, getLatestRegimeSnapshot } from "./db";
+import { detectRegime } from "./regime";
+import { checkCircuitBreaker } from "./circuitBreaker";
+import type { CronOptions, CronResult, MarketRegime } from "./types";
 
 export async function runCronCycle(
   options: CronOptions = {}
@@ -32,26 +35,83 @@ export async function runCronCycle(
 
     const fng = await fetchFearAndGreed();
 
+    const priorRegimeSnap = await getLatestRegimeSnapshot();
+    const priorRegime: MarketRegime = priorRegimeSnap?.regime ?? "neutral";
+
+    const regimeResult = await detectRegime();
+    options.regime = regimeResult.regime;
+    options.previousRegime = priorRegime;
+
+    strategyDecisions.regime = regimeResult;
+
+    const cbStatus = await checkCircuitBreaker();
+    strategyDecisions.circuitBreaker = cbStatus;
+
     const manageResult = await manageOpenPositions();
     strategyDecisions.positionManagement = manageResult;
 
-    const momentum = await runMomentumStrategy(options);
-    strategyDecisions.momentum = momentum;
-    tradesAttempted += momentum.opened + momentum.skipped.length;
-    tradesExecuted += momentum.opened;
-    skipReasons.push(...momentum.skipped);
+    if (cbStatus.halted) {
+      skipReasons.push(`circuit_breaker: ${cbStatus.reason}`);
+      strategyDecisions.strategiesSkipped = "daily/weekly circuit breaker";
 
-    if (shouldRunSentimentMomentumDaily(new Date(), options.testRun)) {
-      const sm = await runSentimentMomentumStrategy(options);
-      strategyDecisions.sentimentMomentum = sm;
-      if (sm.action === "long" || sm.action === "test_long") tradesExecuted++;
+      const capitulation = await runCapitulationBounceStrategy(options);
+      strategyDecisions.capitulationBounce = capitulation;
+      if (capitulation.action === "open") tradesExecuted++;
+
+      const portfolio = await computePortfolioSnapshot();
+      await savePortfolioSnapshot(portfolio);
+
+      const durationMs = Date.now() - start;
+      await recordCronRun(true, durationMs);
+
+      return {
+        ok: true,
+        articlesFetched,
+        articlesScored,
+        strategyDecisions,
+        tradesAttempted,
+        tradesExecuted,
+        skipReasons,
+        errors,
+        durationMs,
+      };
+    }
+
+    if (cbStatus.haltType === "macro") {
+      options.macroHalt = true;
+    }
+
+    if (!options.macroHalt) {
+      const momentum = await runMomentumStrategy(options);
+      strategyDecisions.momentum = momentum;
+      tradesAttempted += momentum.opened + momentum.skipped.length;
+      tradesExecuted += momentum.opened;
+      skipReasons.push(...momentum.skipped);
     } else {
-      strategyDecisions.sentimentMomentum = { skipped: "Not 00:05 UTC window" };
+      strategyDecisions.momentum = { skipped: "macro_halt" };
+      skipReasons.push("macro_halt: momentum blocked");
+    }
+
+    if (!options.macroHalt) {
+      if (shouldRunSentimentMomentumDaily(new Date(), options.testRun)) {
+        const sm = await runSentimentMomentumStrategy(options);
+        strategyDecisions.sentimentMomentum = sm;
+        if (sm.action === "long" || sm.action === "test_long") tradesExecuted++;
+      } else {
+        strategyDecisions.sentimentMomentum = { skipped: "Not 00:05 UTC window" };
+      }
+    } else {
+      strategyDecisions.sentimentMomentum = { skipped: "macro_halt" };
+      skipReasons.push("macro_halt: sentiment momentum blocked");
     }
 
     const fg = await runFearGreedStrategy(fng.value, options);
     strategyDecisions.fearGreed = fg;
     if (fg.action === "open") tradesExecuted++;
+
+    const capitulation = await runCapitulationBounceStrategy(options);
+    strategyDecisions.capitulationBounce = capitulation;
+    if (capitulation.action === "open") tradesExecuted++;
 
     const portfolio = await computePortfolioSnapshot();
     await savePortfolioSnapshot(portfolio);
