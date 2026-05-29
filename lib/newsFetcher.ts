@@ -5,7 +5,6 @@ import {
   articleExistsByUrl,
   insertArticle,
   getArticlesLast24h,
-  getLastFeedSync,
   updateFeedSync,
   getLatestSentimentSnapshot,
   saveSentimentSnapshot,
@@ -25,7 +24,7 @@ const RSS_FEEDS: { url: string; source: string }[] = [
   },
 ];
 
-const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+const FEED_WINDOW_MS = 24 * 60 * 60 * 1000;
 const parser = new Parser({
   timeout: 15000,
   headers: { "User-Agent": "crypto-news-trader-bot/1.0" },
@@ -46,9 +45,7 @@ async function fetchSingleFeed(
 
   try {
     const feed = await parser.parseURL(feedUrl);
-    const cutoff = Date.now() - SIX_HOURS_MS;
-    const lastSync = await getLastFeedSync(source);
-
+    const cutoff = Date.now() - FEED_WINDOW_MS;
     for (const item of feed.items ?? []) {
       const url = item.link ?? item.guid;
       const title = item.title?.trim();
@@ -60,11 +57,6 @@ async function fetchSingleFeed(
       const pubDate = item.pubDate ?? item.isoDate ?? new Date().toISOString();
       const publishedAt = new Date(pubDate);
       if (publishedAt.getTime() < cutoff) {
-        skipped++;
-        continue;
-      }
-
-      if (lastSync && publishedAt.getTime() <= lastSync.getTime()) {
         skipped++;
         continue;
       }
@@ -125,7 +117,7 @@ export async function fetchRedditSentiment(): Promise<FetchResult> {
   let inserted = 0;
   let skipped = 0;
   const errors: string[] = [];
-  const cutoff = Date.now() - SIX_HOURS_MS;
+  const cutoff = Date.now() - FEED_WINDOW_MS;
 
   for (const { url, source } of subreddits) {
     try {

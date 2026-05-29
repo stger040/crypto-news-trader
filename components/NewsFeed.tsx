@@ -12,8 +12,15 @@ const SOURCE_COLORS: Record<string, string> = {
   reddit: "bg-red-500/20 text-red-300",
 };
 
-function timeAgo(iso: string) {
-  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+function parseTime(value: string | Date): number {
+  if (value instanceof Date) return value.getTime();
+  return new Date(value).getTime();
+}
+
+function timeAgo(iso: string | Date) {
+  const ts = parseTime(iso);
+  if (Number.isNaN(ts)) return "—";
+  const m = Math.floor((Date.now() - ts) / 60000);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
@@ -61,7 +68,7 @@ export function NewsFeed({
                       ? Number(a.sentiment_score).toFixed(2)
                       : "—"}
                   </span>
-                  <span className="text-[10px] text-slate-500">{timeAgo(a.published_at)}</span>
+                  <span className="text-[10px] text-slate-500">{timeAgo(a.published_at ?? a.fetched_at ?? "")}</span>
                   <span className="flex gap-1 text-sm" title="Signal metadata">
                     {a.is_syndicated && <span title="Syndicated">🔗</span>}
                     {m?.corroborated && <span title="Corroborated">✅</span>}

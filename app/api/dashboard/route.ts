@@ -9,6 +9,7 @@ import {
   getOpenPositionsByStrategy,
   getArticleTriggerIds,
   getSignalQualityStats,
+  getNewsFeedStats,
 } from "@/lib/db";
 import { getPositionsWithPnL } from "@/lib/positionsView";
 import { buildAnalytics, getCategoryWinRatesAnalytics } from "@/lib/analytics";
@@ -41,7 +42,9 @@ export async function GET() {
       triggerMap,
       regimeBase,
       cbDash,
+      feedStats,
     ] = await Promise.all([
+
       getRecentArticles(20),
       getPositionsWithPnL(),
       getClosedTrades(30),
@@ -54,6 +57,7 @@ export async function GET() {
       getArticleTriggerIds(),
       getRegimeStatusForDashboard(),
       getCircuitBreakerDashboardStatus(),
+      getNewsFeedStats(),
     ]);
 
     const strategies: StrategyPanelStatus[] = await Promise.all([
@@ -99,7 +103,7 @@ export async function GET() {
       macroHaltActive: cbDash.macroHaltActive,
     };
 
-    const health = buildBotHealth(lastCron);
+    const health = buildBotHealth(lastCron, feedStats);
 
     return NextResponse.json({
       news,
@@ -114,6 +118,7 @@ export async function GET() {
       categoryStats,
       health,
       regimeStatus,
+      feedStats,
       liveTrading: process.env.NEXT_PUBLIC_LIVE_TRADING === "true",
     });
   } catch (e) {
@@ -145,40 +150,55 @@ async function buildStrategyStatus(
   };
 }
 
+function toIso(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
 function buildBotHealth(
-  lastCron: { ran_at: string; success: boolean } | null
+  lastCron: { ran_at: string | Date; success: boolean } | null,
+  feedStats: { totalArticles: number; latestFetchedAt: string | null }
 ): BotHealthStatus {
   if (!lastCron) {
+    const feedAge = feedStats.latestFetchedAt
+      ? Date.now() - new Date(feedStats.latestFetchedAt).getTime()
+      : null;
+    if (feedAge != null && feedAge < 15 * 60 * 1000) {
+      return {
+        status: "yellow",
+        message: "Cron log missing but feed recently updated",
+        lastCronAt: feedStats.latestFetchedAt,
+      };
+    }
     return { status: "yellow", message: "No cron run recorded", lastCronAt: null };
   }
 
-  const ageMs = Date.now() - new Date(lastCron.ran_at).getTime();
+  const ageMs = Date.now() - new Date(toIso(lastCron.ran_at)).getTime();
   const ageMin = ageMs / 60000;
 
   if (!lastCron.success) {
     return {
       status: "red",
       message: "Last cron failed",
-      lastCronAt: lastCron.ran_at,
+      lastCronAt: toIso(lastCron.ran_at),
     };
   }
   if (ageMin < 6) {
     return {
       status: "green",
       message: `Healthy — last run ${Math.round(ageMin)}m ago`,
-      lastCronAt: lastCron.ran_at,
+      lastCronAt: toIso(lastCron.ran_at),
     };
   }
   if (ageMin < 15) {
     return {
       status: "yellow",
       message: `Stale — last run ${Math.round(ageMin)}m ago`,
-      lastCronAt: lastCron.ran_at,
+      lastCronAt: toIso(lastCron.ran_at),
     };
   }
   return {
     status: "red",
     message: `Critical — last run ${Math.round(ageMin)}m ago`,
-    lastCronAt: lastCron.ran_at,
+    lastCronAt: toIso(lastCron.ran_at),
   };
 }

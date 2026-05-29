@@ -91,7 +91,7 @@ export async function getRecentArticles(limit = 20): Promise<NewsArticle[]> {
   const sql = getSql();
   return q<NewsArticle>(sql`
     SELECT * FROM news_articles
-    ORDER BY published_at DESC
+    ORDER BY fetched_at DESC, published_at DESC
     LIMIT ${limit}
   `);
 }
@@ -407,14 +407,30 @@ export async function recordCronRun(
 }
 
 export async function getLastCronRun(): Promise<{
-  ran_at: string;
+  ran_at: string | Date;
   success: boolean;
 } | null> {
   const sql = getSql();
-  const rows = await sql`
+  return q1<{ ran_at: string | Date; success: boolean }>(sql`
     SELECT ran_at, success FROM cron_runs ORDER BY ran_at DESC LIMIT 1
+  `);
+}
+
+export async function getNewsFeedStats(): Promise<{
+  totalArticles: number;
+  latestFetchedAt: string | null;
+}> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT COUNT(*)::int AS total, MAX(fetched_at) AS latest_fetched
+    FROM news_articles
   `;
-  return (rows[0] as { ran_at: string; success: boolean }) ?? null;
+  const row = rows[0] as { total: number; latest_fetched: string | Date | null };
+  const latest = row?.latest_fetched;
+  return {
+    totalArticles: row?.total ?? 0,
+    latestFetchedAt: latest instanceof Date ? latest.toISOString() : latest ?? null,
+  };
 }
 
 export async function countPositionsOpenedToday(
